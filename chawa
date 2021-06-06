@@ -1,0 +1,101 @@
+#!/bin/perl
+use strict;
+use warnings;
+use File::Spec;
+use Term::ReadKey;
+
+sub usage()
+{
+	my ($vol,$path,$name) = File::Spec->splitpath($0);
+	print "Usage: $name [-h | --help | command]\n";
+	print "Watches the current directory and executes command on changes.\n";
+	print "\n";
+	print "Command defaults to make if a makefile exists, or to scons if\n";
+	print "an (SC|Sc|sc)onstruct file exists, or to the only executable in\n";
+	print "the directory (assuming that that is a script being edited).\n";
+	print "\n";
+	print "The first file modification event is printed before command\n";
+	print "is executed.\n";
+	exit  0;
+}
+
+my @cmd;
+if (@ARGV)
+{
+	my $a = $ARGV[0];
+	usage if $a eq "-h" or $a eq "--help";
+	@cmd = @ARGV;
+}
+else
+{
+	if (-f "makefile" or -f "Makefile")
+	{
+		@cmd = ("make");
+	}
+	elsif (-f "SConstruct" or -f "Sconstruct" or -f "sconstruct")
+	{
+		@cmd = ("scons");
+	}
+	elsif (-f "main.tex")
+	{
+		@cmd = ("pdflatex main.tex");
+	}
+	else
+	{
+		opendir my $dir, "." or die "Couldn't open directory: $!";
+		while (readdir($dir)) 
+		{
+			if (-f && -x)
+			{
+				usage if @cmd;
+				@cmd = ($_);
+			}
+		}
+		closedir $dir;
+		usage unless @cmd;
+	}
+}
+
+my $opt = "-qre close_write,attrib,move,move_self,create,delete,delete_self,unmount";
+$opt .= ' --timefmt "%F %T"';
+$opt .= ' --format "%T %e %w%f"';
+$opt .= ' --exclude \..*\.sw[px]';
+
+while (1)
+{
+	# inefficient but we don't get useable timestamps to filter events with...
+	open my $w, "-|", "/usr/bin/inotifywait $opt ." or die "inotifywait failed: $?";
+	$_ = <$w>;
+	chomp;
+	if (!m/^(\d\d\d\d)-(\d\d)-(\d\d) (\d\d):(\d\d):(\d\d) (.+)$/)
+	{
+		close $w;
+		die "Invalid event: $_\n";
+	}
+
+	print "\n";
+	my ($n) = GetTerminalSize();
+	if ($n > 3+length)
+	{
+		print "┌",    "─" x ($n-2),        "┐\n";
+		print "│ $_", " " x ($n-3-length), "│\n";
+		print "└",    "─" x ($n-2),        "┘\n";
+	}
+	else
+	{
+		print "$_\n";
+	}
+	close $w;
+
+	select(undef,undef,undef,0.25);
+	system @cmd;
+	#while ($sel->can_read(0))
+	#{
+	#	$_ = <$w>;
+	#	chomp;
+	#	print "Ignoring $_\n";
+	#}
+}
+#close $w;
+
+

@@ -1,0 +1,49 @@
+#!/bin/perl
+use strict;
+use warnings;
+use File::Spec;
+use File::Find;
+use Cwd;
+
+my $RATINGS_FILE = "ratings";
+
+sub usage()
+{
+	my ($vol,$path,$name) = File::Spec->splitpath($0);
+	print "Usage: $name <n>\n";
+	print "       $name <min> <max>\n";
+	print "\n";
+	print "Finds all files below the cwd that are rated exactly\n";
+	print "n or between min and max (both inclusive) stars.\n";
+	exit  0;
+}
+
+usage if @ARGV < 1 or @ARGV > 2;
+my ($min, $max) = @ARGV;
+
+usage if $min!~/^\d+$/;
+usage if defined $max and $max!~/^\d+$/;
+$max = $min if !defined $max;
+$min = 0+$min;
+$max = 0+$max;
+$max = 9 if $max > 9;
+
+($min,$max) = ($max,$min) if $min > $max;
+
+my $pat = ($min == $max ? "$min" : "[$min-$max]");
+
+sub handler
+{
+	return if $_ ne $RATINGS_FILE or !-f $_;
+	open(my $rf, "<", $File::Find::name) or return;
+
+	while(<$rf>)
+	{
+		next unless /^$pat (.+)$/o;
+		print $File::Find::dir, "/", $1, "\n";
+	}
+	close $rf;
+}
+
+find(\&handler, cwd());
+

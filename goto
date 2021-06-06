@@ -1,0 +1,65 @@
+#!/bin/perl
+use strict;
+use warnings;
+use Cwd;
+
+# usage: eval goto [!]label
+#        eval goto set label
+
+my $home = $ENV{HOME};
+my $pre = "$home/.config/goto";
+
+my ($c, $w);
+
+if (@ARGV == 0)
+{
+	print "cd $pre\n";
+	exit 0;
+}
+elsif (@ARGV == 1 && $ARGV[0] =~ /^!(.+)$/)
+{
+	$c = "set";
+	$w = $1;
+}
+elsif (@ARGV == 1)
+{
+	$c = "go";
+	$w = $ARGV[0];
+}
+elsif (@ARGV == 2)
+{
+	$c = $ARGV[0];
+	$w = $ARGV[1];
+}
+else 
+{
+	print "echo wrong number of arguments\n";
+	exit 0;
+}
+
+if ($c eq "set")
+{
+	my $here = cwd();
+	print "ln -snfv $here $pre/$w\n";
+}
+elsif ($c eq "go")
+{
+	if (-e "$pre/$w")
+	{
+		print "cd $pre/$w && cd (pwd -P)\n";
+		# cd -P does not work in fish
+		#print "cd -P $pre/$w\n";
+	}
+	else
+	{
+		print "echo $w is not defined.\n";
+	}
+}
+elsif ($c eq "rm" || $c eq "kill")
+{
+	print "rm $pre/$w\n";
+}
+else
+{
+	print "echo unknown command: $c\n";
+}

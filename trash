@@ -1,0 +1,98 @@
+#!/bin/perl
+use strict;
+use warnings;
+use File::Spec;
+use Cwd;
+use Cwd 'realpath';
+
+sub trash_folder
+{
+	my $P0 = @_ ? shift(@_) : getcwd();
+	my $P = $P0;
+	die "Path not found: $P\n" unless -e $P;
+	if (!-d $P)
+	{
+		my ($v,$p,$f) = File::Spec->splitpath(File::Spec->rel2abs($P));
+		$P = File::Spec->catpath($v,$p,'');
+		die "Parent directory not found: $P\n" unless -d $P;
+	}
+
+	while (1)
+	{
+		my $T = File::Spec->catpath('',$P,'.trash');
+		return $T if -d $T && -w $T;
+		$T = File::Spec->catpath('',$P,'_Trash');
+		return $T if -d $T && -w $T;
+		$P = realpath(File::Spec->rel2abs(File::Spec->catpath('',$P,'..')));
+		die "No Trash folder below $P0\n" if ($P eq '/');
+	}
+}
+
+if (!@ARGV)
+{
+	my $T = trash_folder();
+	my $s = `du -sh $T`;
+	$s =~ s/\s.*$//;
+	printf "Trash size: $s";
+	exit 0;
+}
+while (@ARGV && $ARGV[0] =~ /^-/)
+{
+	$a = shift @ARGV;
+	last if $a eq "--";
+	if ($a eq "-e")
+	{
+		die "-e must be the only argument\n" if @ARGV;
+		my $T = trash_folder();
+
+		my $cmd = "df --output=avail \"$T\" | tail -1";
+		my $s0 = `$cmd`; # free 1K-blocks
+		system "shopt -s dotglob nullglob; rm -rf -- $T/*";
+		if ($? == -1 || $? >> 8) { die "Failed.\n"; }
+		my $ds = `$cmd` - $s0;
+		my $u = "KB";
+		if ($ds >= 1024*1024)
+		{
+			$u = "GB";
+			$ds /= 1024.0*1024.0;
+		}
+		elsif ($ds >= 1024)
+		{
+			$u = "MB";
+			$ds /= 1024.0;
+		}
+		printf("Freed %.2f %s\n", $ds, $u);
+		exit 0;
+	}
+	else
+	{
+		printf "Usage: trash [--] <files>\n";
+		printf "       trash [-e]\n";
+		printf "First variant moves files or folders to the trash.\n";
+		printf "Using -e empties the trash and with no arguments it ";
+		printf "prints the total size of the trash folder.\n";
+		exit 1;
+	}
+}
+
+for (@ARGV)
+{
+	die "File not found: $_\n" unless -e;
+	my $T = trash_folder($_);
+	my ($v,$p,$f) = File::Spec->splitpath(File::Spec->rel2abs($_));
+	my $N = File::Spec->catpath('',$T,$f);
+	if ($f =~ /\(\d+\)$/){ $N .= '(0)'; }
+	my $M = $N . '.src';
+	if (-e $N || -e $M)
+	{
+		for (my $i = 1; ; ++$i)
+		{
+			$N = File::Spec->catpath('',$T,$f . "($i)");
+			$M = $N . '.src';
+			last if (!-e $N && !-e $M);
+		}
+	}
+	symlink $p, $M or die "Failed creating source link: $M --> $p\n"; 
+	rename $_, $N or die "Failed moving file to trash: $_ --> $N\n";
+}
+
