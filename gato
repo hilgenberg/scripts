@@ -1,0 +1,184 @@
+#!/usr/bin/python
+from gato_regular import *
+from gato_irregular import *
+from gato_verbs import *
+import os
+
+def table(v:Verb):
+	v0 = v if type(v) == Verb else Verb(v.full)
+	
+	dim = '\033[35m'
+	nrm = '\033[0m'
+	sel = '\033[35m'
+	def pr(a, b, w):
+		if b is None or a == b or len(a) == 0:
+			print(a.ljust(w), end="")
+			return
+
+		# handle the "tú / vos" items
+		ia = a.find(" / ")
+		ib = b.find(" / ")
+		if ia > 0 and ib > 0:
+			pr(a[:ia], b[:ib], ia)
+			print(" / ", end="")
+			pr(a[ia+3:], b[ib+3:], w-ia-3)
+			return
+		elif ia > 0 and ib < 0:
+			pr(a[:ia], b, ia)
+			print(" / ", end="")
+			pr(a[ia+3:], b, w-ia-3)
+			return
+		if ia < 0 and ib > 0:
+			if a != b[:ib]:
+				pr(a, b[:ib], w)
+			else:
+				pr(a, b[ib+3:], w)
+			return
+
+		# find common suffix
+		n = 0
+		while n < len(a) and n < len(b) and a[n] == b[n]:
+			n += 1
+		# and common prefix
+		m = 0
+		while m < len(a) and m < len(b) and a[-1-m] == b[-1-m]:
+			m += 1
+
+		# a and b are not equal, so this must hold:
+		assert(n+m <= len(a) and n+m <= len(b))
+		assert(n+m <  len(a) or  n+m <  len(b))
+
+		# if diff is removal, mark the spot
+		if n+m == len(a):
+			assert(len(a) < len(b))
+			if m > 0:
+				m -= 1
+			else:
+				n -= 1
+		
+		if m == 0:
+			# (the -m indices would not work)
+			print(a[:n] + sel + a[n:] + nrm, end="")
+		else:
+			print(a[:n] + sel + a[n:-m] + nrm + a[-m:], end="")
+		print(" "*(w-len(a)), end="")
+
+	TT = []
+	for x in [v, v0]:
+		T = [
+			["Inf", x.full],
+			["Gerund", x.gerund() or "-"],
+			["Perfect", x.perfect() or "-"],
+			["Present"] + x.present(),
+			["Past1"] + x.indefinido(),
+			["Past2"] + x.imperfekt(),
+			["Futur"] + x.futur(),
+			["Kond"] + x.konditional(),
+			["Imp"] + x.imperativ(),
+			["Sub.P"] + x.subjunktiv(),
+			["Sub.I"] + x.subjunktiv_I(),
+			["Sub.I2"] + x.subjunktiv_I(True),
+			["Sub.F"] + x.subjunktiv_F()
+		]
+		for E in T:
+			for i in range(0, len(E)):
+				if E[i] is None: E[i] = "-"
+			E[0] = E[0].upper()
+			if len(E) == 8:
+				if E[3] != E[4]:
+					E[3] = f"{E[3]} / {E[4]}"
+				del E[4]
+			E.insert(0, max(len(x) for x in E))
+		TT.append(T)
+	T,T0 = TT
+
+	# align columns if we have the screen space for it
+	W,H = os.get_terminal_size()
+	N = [3,5,5]
+	ww = [0] * max(N)
+	i = 0
+	for n in N:
+		for x in range(0,n):
+			w = T[i+x][0]
+			if w > ww[x]: ww[x] = w
+		i += n
+	assert(i == len(T))
+	if max(N)*(max(ww)+2)+2 <= W:
+		w = max(ww)
+		for E in T: E[0] = w
+	elif sum(ww)+2*(max(N)+1) <= W:
+		i = 0
+		for n in N:
+			for x in range(0,n):
+				T[i+x][0] = ww[x]
+			i += n
+
+	print()
+	i = 0
+	for n in N:
+		for y in range(0,2 if i==0 else 7):
+			if y == 0: print(dim, end = "")
+			for x in range(i,i+n):
+				print("  ", end="")
+				pr(T[x][y+1], T0[x][y+1], T[x][0])
+			if y == 0: print(nrm, end = "")
+			print()
+		print()
+		i += n
+	assert(i == len(T))
+
+
+
+if __name__ == "__main__":
+	for v,t in regulars.items():
+		verbs[v] = Verb(v,t)
+
+	for v,x in irregulars.items():
+		t,P,D = x
+		verbs[v] = DVerb(v, t, P, D)
+
+	if len(sys.argv) == 1:
+		sys.exit("no verb to conjugate")
+		
+		print("regulars = {")
+		for s,t in sorted(regulars.items()):
+			v = verbs[s]
+			k = f"'{s}':".ljust(15)
+			print(f"\t{k} \"{v.trans}\",")
+		print("}")
+		print()
+
+		print("irregulars = {")
+		for s,x in sorted(irregulars.items()):
+			t,P,D = x
+			v = verbs[s]
+			k = f"'{s}':".ljust(15)
+			if v.parent is None:
+				P = "None"
+			else:
+				f,r,a = v.parent
+				P = f"'{f}'"
+			D = ""
+			for a,b in v.d.items():
+				if len(D) > 0: D += " "
+				D += a + ':' + b.lower()
+			print(f"\t{k} (\"{v.trans}\", {P}, \"{D}\"),")
+		print("}")
+		sys.exit(0)
+
+
+	for i in range(1, len(sys.argv)):
+		if i > 1: print("\n")
+		s = sys.argv[i].lower()
+		if s in verbs:
+			v = verbs[s]
+			table(v)
+		elif s[-1] == '!':
+			try:
+				v = Verb(s[:-1])
+				table(v)
+			except:
+				print(s[:-1], "is garbage")
+		else:
+			print(s, "not found!")
+

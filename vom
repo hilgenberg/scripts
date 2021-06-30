@@ -8,6 +8,7 @@ def usage():
 	sys.exit("""\
 Usage: %s [command], where command is one of:
 	(empty): quiz mode
+	all: quiz everything, due or not
 	a:  add new entries
 	db: open database file in sqlitebrowser
 	it: list all entries
@@ -28,6 +29,11 @@ cfg = {"p":None}
 a_prompt, b_prompt = None, None
 DATA_PATH = '~/.config/vom/'
 DATA_FILE = 'data.sqlite'
+qa = False
+SEL = '\033[35m'
+NRM = '\033[0m'
+
+# TODO: allow multiple answers ("A | B | C")
 
 ########################################################################
 # Helper functions
@@ -230,10 +236,20 @@ def load_prompt():
 	p = cfg['p']
 	if p is None: sys.exit("Set the prompt first!")
 	for row in db.execute("SELECT * FROM categories WHERE id=?", (p,)):
-		a_prompt = "[%s] " % row['a']
-		b_prompt = "[%s] " % row['b']
+		a_prompt = f"{SEL}[{row['a']}]{NRM} "
+		b_prompt = f"{SEL}[{row['b']}]{NRM} "
 		return
 	sys.exit("Invalid prompt id: %d" % p)
+
+def find(S):
+	A = ()
+	Q = "SELECT * FROM data"
+	for s in S:
+		Q += " WHERE" if len(A) == 0 else " AND"
+		w = f'%{s}%'
+		A += (w,w)
+		Q += " (LOWER(a) LIKE LOWER(?) OR LOWER(b) LIKE LOWER(?))"
+	return db.execute(Q, A)
 
 ########################################################################
 # Commandline parsing
@@ -259,7 +275,7 @@ elif len(sys.argv) == 2 and sys.argv[1] == "i":
 	n = 0 if row is None else row[0]
 	print("%4d pair%s total." % (n, "s" if n != 1 else ""))
 
-	for h in [0, 1, 2, 4, 6, 12, 24, 48, 72, 7*24, 30*24, 365*24]:
+	for h in [0, 1, 2, 4, 6, 8, 10, 12, 24, 48, 72, 7*24, 30*24, 365*24]:
 		t1 = NOW+h*60*60
 		row = db.execute(Q + "WHERE a_time < ?", (t1,)).fetchone()
 		n = 0 if row is None else row[0]
@@ -270,15 +286,12 @@ elif len(sys.argv) == 2 and sys.argv[1] == "i":
 		print("%4d item%s %s." % (n, "s" if n != 1 else "", ds))
 	sys.exit(0)
 
-elif len(sys.argv) == 3 and sys.argv[1] == "f":
+elif len(sys.argv) >= 3 and sys.argv[1] == "f":
 	connect()
 	found_any = False
-	w = f'%{sys.argv[2]}%'
-	for row in db.execute("""SELECT * FROM data WHERE
-		LOWER(a) LIKE LOWER(?) OR
-		LOWER(b) LIKE LOWER(?)""", (w,w)):
+	for row in find(sys.argv[2:]):
 		found_any = True
-		print("%s --> %s" % (row['a'], row['b']))
+		print(f"%s {SEL}-->{NRM} %s" % (row['a'], row['b']))
 	if not found_any: print("Not found.")
 	sys.exit(0)
 
@@ -288,14 +301,11 @@ elif len(sys.argv) == 2 and sys.argv[1] == "db":
 	print("Exec failed!")
 	sys.exit(-1)
 
-elif len(sys.argv) == 3 and sys.argv[1] == "e":
+elif len(sys.argv) >= 3 and sys.argv[1] == "e":
 	connect()
 	load_prompt()
 	items = []
-	w = f'%{sys.argv[2]}%'
-	for row in db.execute("""SELECT * FROM data WHERE
-		LOWER(a) LIKE LOWER(?) OR
-		LOWER(b) LIKE LOWER(?)""", (w,w)):
+	for row in find(sys.argv[2:]):
 		items.append((row['id'], row['a'], row['b']))
 	if len(items) == 0:
 		print("Nothing found.")
@@ -307,7 +317,7 @@ elif len(sys.argv) == 3 and sys.argv[1] == "e":
 	else:
 		for i in range(0,len(items)):
 			j,a,b = items[i]
-			print("%2d: %s --> %s" % (i+1,a,b))
+			print(f"{SEL}%2d:{NRM} %s {SEL}-->{NRM} %s" % (i+1,a,b))
 		while True:
 			try:
 				n = input("? ")
@@ -421,6 +431,10 @@ elif len(sys.argv) == 2 and sys.argv[1] == "a":
 		print("")
 	sys.exit(0)
 
+elif len(sys.argv) == 2 and sys.argv[1] == "all":
+	qa = True
+	# and fall through into quiz mode...
+	
 elif len(sys.argv) > 1:
 	usage()
 
@@ -431,12 +445,16 @@ elif len(sys.argv) > 1:
 found_any = False
 
 def quiz(a:str, b:str):
-	global found_any, NOW, db
+	global found_any, NOW, db, qa
 
-	Q = """SELECT COUNT(*) FROM data WHERE %s_time < ?""" % a
-	row = db.execute(Q, (NOW,)).fetchone()
-	if row is not None and row[0] > 0:
-		print("Found %d items.\n" % row[0])
+	def total():
+		global NOW, db
+		Q = """SELECT COUNT(*) FROM data WHERE %s_time < ?""" % a
+		row = db.execute(Q, (NOW,)).fetchone()
+		return 0 if row is None else row[0]
+
+	N0 = total() if not qa else -1
+	if N0 > 0: print(f"{SEL}Found {N0} items.{NRM}\n")
 
 	# this puts useable key names into the rows when joining:
 	db.execute("pragma full_column_names=ON;")
@@ -446,37 +464,66 @@ def quiz(a:str, b:str):
 		INNER JOIN categories c ON data.category=c.id 
 		WHERE %s_time < ? 
 		ORDER BY RANDOM() LIMIT 1""" % a
+
+	QA = """SELECT data.*, c.a, c.b FROM data 
+		INNER JOIN categories c ON data.category=c.id 
+		ORDER BY RANDOM() LIMIT 1"""
 	
 	U = "UPDATE data SET %s_bucket = ?, %s_time = ? WHERE id = ?" % (a,a)
 
 	while True:
-		row = db.execute(Q, (NOW,)).fetchone()
+		row = (db.execute(Q, (NOW,)) if not qa else \
+		       db.execute(QA)).fetchone()
 		if row is None: break
 		found_any = True
 
 		# print question
-		ap = "[%s] " % row['categories.%s'%a]
-		bp = "[%s] " % row['categories.%s'%b]
+		ap = f"{SEL}[{row['categories.%s'%a]}]{NRM} "
+		bp = f"{SEL}[{row['categories.%s'%b]}]{NRM} "
 		print(ap + str(row[a]))
 
-		# get answer and catch hitting Enter key twice
+		# get answer
+		B0 = ""
 		while True:
-			B = normal(input(bp), True)
-			if B != "": break
+			BB = normal(edit(bp, B0), False)
+			B = normal(BB, True)
 
-		# check answer, move to proper bucket+time
-		if B.lower() == normal(str(row[b]), True).lower():
+			# type hash for status
+			if B == "#":
+				if qa:
+					print("Unlimited mode, hit ^D to end")
+				else:
+					print("This is %d / %d." % (1+N0-total(), N0))
+			# ignore empty input (hitting enter twice by accident)
+			elif B == "" and B0 != "":
+				continue
+			
+			# break on right answer
+			elif B.lower() == normal(str(row[b]), True).lower():
+				solved = True
+				break
+
+			# repeat wrong answer (or empty input) to give up
+			elif B == B0 or B == "" or BB == '?':
+				print("")
+				input("NO --> %s" % row[b])
+				solved = False
+				break
+
+			# wrong answer - allow correction
+			else:
+				B0 = BB
+
+		# move to proper bucket+time
+		if solved:
 			rb,rt = update_known(row["%s_bucket" % a], row["%s_time" % a])
-			#due = re.sub('\s\s+', ' ', dt_fmt(rt))
-			#print("YES ---> %d, %s" % (rb, due))
 		else:
-			print("")
-			input("NO --> %s" % row[b])
 			rb = 0
 			rt = NOW + 1
 		db.execute(U, (rb, rt, row['id']))
 		db.commit()
 
+		# print blank line before next question
 		print("")
 
 connect()
