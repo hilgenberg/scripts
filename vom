@@ -2,45 +2,52 @@
 import os,sys,re,time,datetime
 import sqlite3
 import readline # don't remove - enables editing in input() calls
+import random
 
 def usage():
 	m = os.path.basename(sys.argv[0])
-	sys.exit("""\
-Usage: %s [command], where command is one of:
-	(empty): quiz mode
-	all: quiz everything, due or not
-	a:  add new entries
-	db: open database file in sqlitebrowser
-	it: list all entries
-	i:  show statistics on what is due and when
-	l:  show selected language pair
-	l  <A> <B>: selects existing A <-> B language pair
-	l! <A> <B>: creates and selects new language pair
-	f  <query>: find (sub)string in database
-	e  <query>: edit matching entry
+	sys.exit("""
+Usage:
+  %s [command]
+
+Commands:
+  (empty)      quiz mode
+  all          quiz everything, due or not
+
+  a            add new entries
+  f <query>    find (sub)string(s) in database
+  e <query>    edit matching entry
+
+  db           open database file in sqlitebrowser
+  it           list all entries
+  i            show statistics on what is due and when
+	
+  l            show selected language pair
+  l  <A> <B>   selects existing A <-> B language pair
+  l! <A> <B>   creates and selects new language pair
 
 The selected language pair applies to adding new entries - quizzing
-is always done for everything that is due."""\
-	% (m,))
+is always done for everything that is due.
 
-NOW = int(time.time())
-HOURS = 60*60
-cfg = {"p":None}
-a_prompt, b_prompt = None, None
+Matching is done ignoring case, spacing and punctuation at the ends.
+Items like "A|B|C" match any (or all in any order) of the options.
+""" % (m,))
+
+NOW       = int(time.time())
+cfg       = {"p":None} # filled from "config" table. p is ID of language pair
 DATA_PATH = '~/.config/vom/'
 DATA_FILE = 'data.sqlite'
-qa = False
-SEL = '\033[35m'
-NRM = '\033[0m'
-
-# TODO: allow multiple answers ("A | B | C")
+SEL       = '\033[35m' # hilight color
+NRM       = '\033[0m'  # standard color
+qa        = False # set to True on "all" command
+a_prompt, b_prompt = None, None
 
 ########################################################################
 # Helper functions
 ########################################################################
 
 def bucket_time(b:int):
-	global HOURS
+	HOURS = 60*60
 	D = [1, 1, 2, 3, 5, 8, 14, 21, 30, 50, 80, 120, 200]
 	if b is None or b < 0: b = 0
 	if b >= len(D): b = len(D)-1
@@ -79,17 +86,46 @@ def update_known(b:int, t:int):
 		n = x.second + x.minute*60 + (x.hour-6)*60*60
 		# pull back during the day only
 		if x.hour >= 6:
-			if fuzz > n: fuzz = n
-			t -= fuzz
+			dt = min(fuzz, n)
+			t -= dt
+			fuzz -= dt
+
+	# also work against clustering into single days - like when not
+	# quizzing or adding for several days and then going through a
+	# large list - avoid everything clustering into single days with
+	# nothing to do inbetween
+	DAY = 24*60*60
+	if fuzz >= DAY:
+		dd = random.randint(0, int(fuzz/DAY))
+		t -= dd * DAY
+		fuzz -= dd*DAY
+		assert(t >= now)
+
 	return (b,t)
 
-def normal(s:str, full:bool):
+def normal(s:str):
 	s = s.strip()
 	# unify spaces and tabs
 	s = re.sub('\s\s+|\t', ' ', s)
-	# remove punctuation at the ends when comparing
-	if full: s = re.sub('\s*[.!?]+$|^[¡¿]+\s*','', s)
 	return s
+
+def matches(s:str, a:str) -> bool:
+	S = s.split("|")
+	A = a.split("|")
+	for M in [S,A]:
+		for i in range(0, len(M)):
+			s = M[i].strip().lower()
+			# unify spaces and tabs
+			s = re.sub('\s\s+|\t', ' ', s)
+			# remove punctuation at the ends when comparing
+			s = re.sub('\s*[.!?,]+$|^[¡¿]+\s*','', s)
+			M[i] = s
+	S = set(S)
+	A = set(A)
+	S.discard("")
+	A.discard("")
+	if len(S) == 0: return len(A) == 0
+	return S.issubset(A)
 
 def edit(prompt:str, default:str=""):
 	readline.set_startup_hook(lambda: readline.insert_text(default))
@@ -270,20 +306,97 @@ if len(sys.argv) == 2 and sys.argv[1] == "it":
 
 elif len(sys.argv) == 2 and sys.argv[1] == "i":
 	connect()
+	W,H = os.get_terminal_size()
+	
 	Q = "SELECT COUNT(*) FROM data "
 	row = db.execute(Q).fetchone()
-	n = 0 if row is None else row[0]
-	print("%4d pair%s total." % (n, "s" if n != 1 else ""))
+	total = 0 if row is None else row[0]
 
+	#row = db.execute(Q + "WHERE a_time < ?", (NOW,)).fetchone()
+	#m = 0 if row is None else row[0]
+	#row = db.execute(Q + "WHERE b_time < ?", (NOW,)).fetchone()
+	#m += 0 if row is None else row[0]
+	#print("%4d item%s due, %d pair%s total." % (m, "s" if m != 1 else "",
+	#	n, "s" if n != 1 else ""))
+
+	# Table with some statistics:
+	#------------------------------------------------------------------
+	print()
+	s0 = "┌"
+	s1 = "│"
+	sm = "├"
+	s2 = "│"
+	s3 = "└"
 	for h in [0, 1, 2, 4, 6, 8, 10, 12, 24, 48, 72, 7*24, 30*24, 365*24]:
 		t1 = NOW+h*60*60
 		row = db.execute(Q + "WHERE a_time < ?", (t1,)).fetchone()
 		n = 0 if row is None else row[0]
 		row = db.execute(Q + "WHERE b_time < ?", (t1,)).fetchone()
 		n += 0 if row is None else row[0]
-		ds = "due" if h == 0 else "within %3dh" % h if h <= 48 else\
-			"within %3dD" % int(h/24)
-		print("%4d item%s %s." % (n, "s" if n != 1 else "", ds))
+		ss1 = str(n)
+		ss2 = "NOW" if h==0 else "%dh"%h if h <= 48 else "%dD"%(h//24)
+		k = 2+max(len(ss1), len(ss2))
+		if len(s0)+k+1 > W: break
+		ss1 = ss1.rjust(k-1)
+		ss2 = ss2.rjust(k-1)
+		if h == 0 or h == 24:
+			ss1 = SEL+ss1+NRM
+			ss2 = SEL+ss2+NRM
+		s0 += "─" * k + "┬"
+		s1 += ss1    + " │"
+		sm += "─" * k + "┼"
+		s2 += ss2    + " │"
+		s3 += "─" * k + "┴"
+	s0 = s0[:-1] + "┐"
+	sm = sm[:-1] + "┤"
+	s3 = s3[:-1] + "┘"
+	pre = " " * ((W-len(s0))//2)
+	print(pre+s0)
+	print(pre+s2)
+	print(pre+sm)
+	print(pre+s1)
+	print(pre+s3)
+	print()
+
+	# Histogram:
+	#------------------------------------------------------------------
+	k = 1 # x axis scale: 1 character is k hours
+	D = {} # histogram data
+	h = 15
+	for x in "ab":
+		for row in db.execute(f"""SELECT 
+			FLOOR((MAX({x}_time-?,0))/(3600*{k})) as i,
+			COUNT(id) as n
+			FROM DATA GROUP BY 1 ORDER BY 1""", (NOW,)):
+			i,n = row['i'],row['n']
+			if not i in D:
+				D[i] = n
+			else:
+				D[i] += n
+	N = max(D.values())
+	y0 = int(100/N*h)
+	for i in D: D[i] = D[i]/N*h
+	s = " " + "▁" * (W-2)
+	print(s + " ")
+	for y in range(h,-1,-1):
+		s = ""
+		for x in range(0, W-2):
+			s += '▒' if D.get(x,0) > y else '░'
+		print("▕" + s + "▎")
+	s = " "
+	for x in range(0, W-2):
+		s += "▀" if x*k % 24 == 0 else "▔"
+	print(s+" ")
+	s = "NOW"
+	t = 24
+	while True:
+		tt = str(t)+"h"
+		if t//k + len(tt) > W: break
+		s += " "*(t//k - len(s)) + tt
+		t += 24
+	print(s)
+	print()
+	print(("max = %d, total pairs = %d" % (N, total)).center(W))
 	sys.exit(0)
 
 elif len(sys.argv) >= 3 and sys.argv[1] == "f":
@@ -338,8 +451,8 @@ elif len(sys.argv) >= 3 and sys.argv[1] == "e":
 			break
 	i,a0,b0 = items[n]
 	try:
-		a = normal(edit(a_prompt, a0), False)
-		b = normal(edit(a_prompt, b0), False)
+		a = normal(edit(a_prompt, a0))
+		b = normal(edit(a_prompt, b0))
 	except KeyboardInterrupt:
 		print("")
 		sys.exit(0)
@@ -360,8 +473,8 @@ elif len(sys.argv) >= 3 and sys.argv[1] == "e":
 			AND (LOWER(a)=LOWER(?) OR LOWER(b)=LOWER(?))",\
 			(cfg['p'],a,b)):
 			if row['id'] != i:
-				print("Collision with: %s --> %s",\
-					row['a'], row['b'])
+				print("Collision with: %s --> %s"\
+					%(row['a'], row['b']))
 				sys.exit(2)
 		db.execute("UPDATE data SET a=?,b=? WHERE id=?", (a,b,i))
 		db.commit()
@@ -399,7 +512,7 @@ elif len(sys.argv) == 2 and sys.argv[1] == "a":
 	load_prompt()
 	try:
 		while True:
-			A = normal(input(a_prompt), False)
+			A = normal(input(a_prompt))
 			if A == "":
 				print("Can not be empty\n")
 				continue
@@ -411,7 +524,7 @@ elif len(sys.argv) == 2 and sys.argv[1] == "a":
 				print("")
 				continue
 
-			B = normal(input(b_prompt), False)
+			B = normal(input(b_prompt))
 			if B == "":
 				print("Can not be empty\n")
 				continue
@@ -480,13 +593,14 @@ def quiz(a:str, b:str):
 		# print question
 		ap = f"{SEL}[{row['categories.%s'%a]}]{NRM} "
 		bp = f"{SEL}[{row['categories.%s'%b]}]{NRM} "
-		print(ap + str(row[a]))
+		#print(ap + str(row[a]))
+		S = [s.strip() for s in str(row[a]).split("|")]
+		print(ap + (SEL+" | "+NRM).join(S))
 
 		# get answer
 		B0 = ""
 		while True:
-			BB = normal(edit(bp, B0), False)
-			B = normal(BB, True)
+			B = normal(edit(bp, B0))
 
 			# type hash for status
 			if B == "#":
@@ -495,16 +609,16 @@ def quiz(a:str, b:str):
 				else:
 					print("This is %d / %d." % (1+N0-total(), N0))
 			# ignore empty input (hitting enter twice by accident)
-			elif B == "" and B0 != "":
+			elif B == "" and B0 == "":
 				continue
 			
 			# break on right answer
-			elif B.lower() == normal(str(row[b]), True).lower():
+			elif matches(B, str(row[b])):
 				solved = True
 				break
 
-			# repeat wrong answer (or empty input) to give up
-			elif B == B0 or B == "" or BB == '?':
+			# repeat wrong answer (or clear input) to give up
+			elif B == B0 or B in {'','-','.','?'}:
 				print("")
 				input("NO --> %s" % row[b])
 				solved = False
@@ -512,7 +626,7 @@ def quiz(a:str, b:str):
 
 			# wrong answer - allow correction
 			else:
-				B0 = BB
+				B0 = B
 
 		# move to proper bucket+time
 		if solved:

@@ -66,14 +66,15 @@ def table(v:Verb):
 	TT = []
 	for x in [v, v0]:
 		T = [
-			["Inf", x.full],
+			["Verb", x.full],
 			["Gerund", x.gerund() or "-"],
 			["Perfect", x.perfect() or "-"],
+			["T", "-"], # ignore translation for sizing
 			["Present"] + x.present(),
 			["Past1"] + x.indefinido(),
 			["Past2"] + x.imperfekt(),
-			["Futur"] + x.futur(),
-			["Kond"] + x.konditional(),
+			["Future"] + x.futur(),
+			["Cond"] + x.konditional(),
 			["Imp"] + x.imperativ(),
 			["Sub.P"] + x.subjunktiv(),
 			["Sub.I"] + x.subjunktiv_I(),
@@ -94,7 +95,7 @@ def table(v:Verb):
 
 	# align columns if we have the screen space for it
 	W,H = os.get_terminal_size()
-	N = [3,5,5]
+	N = [4,5,5]
 	ww = [0] * max(N)
 	i = 0
 	for n in N:
@@ -113,6 +114,9 @@ def table(v:Verb):
 				T[i+x][0] = ww[x]
 			i += n
 
+	T[3] = [0, "TRANSLATION", v.trans]
+	T0[3] = T[3]
+
 	print()
 	i = 0
 	for n in N:
@@ -127,7 +131,31 @@ def table(v:Verb):
 		i += n
 	assert(i == len(T))
 
-
+def tree():
+	global verbs, irregulars
+	R = []
+	C = {}
+	for v,x in irregulars.items():
+		t,P,D = x
+		if P is None:
+			R.append(v)
+		else:
+			assert(P in irregulars)
+			if not P in C:
+				C[P] = [v]
+			else:
+				C[P].append(v)
+	def pr(v, pre1:str="", pre2:str=""):
+		k = len(verbs[v].d)
+		k = "" if k == 0 else " %d" % k
+		print(pre1 + v + k)
+		if not v in C: return
+		c = C[v]
+		for x in c[:-1]:
+			pr(x, pre2 + "  ├── ", pre2 + "  │   ")
+		pr(c[-1],     pre2 + "  └── ", pre2 + "      ")
+	
+	for v in R: pr(v)
 
 if __name__ == "__main__":
 	for v,t in regulars.items():
@@ -136,6 +164,10 @@ if __name__ == "__main__":
 	for v,x in irregulars.items():
 		t,P,D = x
 		verbs[v] = DVerb(v, t, P, D)
+
+	if len(sys.argv) == 2 and sys.argv[1] == "-t":
+		tree()
+		sys.exit(0)
 
 	if len(sys.argv) == 1:
 		sys.exit("no verb to conjugate")
