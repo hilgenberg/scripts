@@ -11,7 +11,7 @@ Usage:
   %s [command]
 
 Commands:
-  (empty)      quiz mode
+ (empty)       quiz mode
   all          quiz everything, due or not
 
   a            add new entries
@@ -21,37 +21,48 @@ Commands:
   db           open database file in sqlitebrowser
   it           list all entries
   i            show statistics on what is due and when
-	
+  I            same as i but use days as histogram bins
+  R            roll back all entries' due dates by one day
+
   l            show selected language pair
   l  <A> <B>   selects existing A <-> B language pair
   l! <A> <B>   creates and selects new language pair
 
 The selected language pair applies to adding new entries - quizzing
-is always done for everything that is due.
+is always done for everything that is due. When learning spanish and
+you speak english, say, use l en es, not l es en, so the active recall
+is quizzed before the passive.
 
 Matching is done ignoring case, spacing and punctuation at the ends.
-Items like "A|B|C" match any (or all in any order) of the options.
+Items like "A|B|C" match some or all of the options in any order.
 """ % (m,))
+# debugging commands:
+#  norm <str>            normalize given string
+#  match <answer> <str>  match given string against answer
 
-NOW       = int(time.time())
-cfg       = {"p":None} # filled from "config" table. p is ID of language pair
+
 DATA_PATH = '~/.config/vom/'
 DATA_FILE = 'data.sqlite'
 SEL       = '\033[35m' # hilight color
-NRM       = '\033[0m'  # standard color
-qa        = False # set to True on "all" command
-a_prompt, b_prompt = None, None
+NRM       = '\033[0m'  # reset to standard color
+
+# readline wants nonprinting escapes inside \001 ... \002
+a_prompt  = f"\001{SEL}\002[%s]\001{NRM}\002 "
+b_prompt  = a_prompt # same pattern for Q and A
+cfg       = {"p":None} # filled from "config" table. p is ID of language pair
+QUIZ_ALL  = False # set to True on "all" command
+NOW       = int(time.time())
 
 ########################################################################
 # Helper functions
 ########################################################################
 
 def bucket_time(b:int):
-	HOURS = 60*60
-	D = [1, 1, 2, 3, 5, 8, 14, 21, 30, 50, 80, 120, 200]
+	DAYS = 60*60*24
+	D = [1, 1, 2, 3, 5, 8, 14, 21, 30, 50, 80, 100, 120]
 	if b is None or b < 0: b = 0
 	if b >= len(D): b = len(D)-1
-	return int(D[b] * 24 * HOURS)
+	return int(D[b] * DAYS)
 
 def update_known(b:int, t:int):
 	now = int(time.time())
@@ -69,12 +80,12 @@ def update_known(b:int, t:int):
 		# option A if 90% of bucket time has passed
 		t  = now + dt
 		b += 1
-		fuzz = dt * 0.1
+		fuzz = dt * 0.15
 	
 	elif now+dt0 > t:
 		# option B unless that moves t backwards (should not happen)
 		t = now + dt0
-		fuzz = dt0 * 0.1
+		fuzz = dt0 * 0.15
 
 	# work against quiz times drifting farther and farther back by
 	# always pulling them a little bit towards 6:00 in the morning
@@ -94,9 +105,25 @@ def update_known(b:int, t:int):
 	# quizzing or adding for several days and then going through a
 	# large list - avoid everything clustering into single days with
 	# nothing to do inbetween
-	DAY = 24*60*60
-	if fuzz >= DAY:
-		dd = random.randint(0, int(fuzz/DAY))
+	HOUR = 60*60
+	DAY = 24*HOUR
+	K  = int(fuzz/DAY)
+	if K >= 1:
+		#dd = random.randint(0, K)
+		D = []
+		D0 = []
+		for i in range(0, K+1):
+			n = 0
+			for x in "ab":
+				n += db.execute(f"SELECT COUNT(*) FROM data \
+					WHERE {x}_time > ? AND {x}_time <= ? ",
+					(t-(i+1)*DAY+4*HOUR, t-i*DAY+4*HOUR)).fetchone()[0]
+			D.append(1 / (10+10*i+n*n))
+			D0.append(n)
+		#dd = random.choices(range(0, K+1), D)[0]
+		dd = min(enumerate(D0), key=lambda x: x[1])[0]
+		#if dd != 0: print("Random offset:", D0, "-->", dd, "days")
+
 		t -= dd * DAY
 		fuzz -= dd*DAY
 		assert(t >= now)
@@ -104,10 +131,18 @@ def update_known(b:int, t:int):
 	return (b,t)
 
 def normal(s:str):
-	s = s.strip()
-	# unify spaces and tabs
-	s = re.sub('\s\s+|\t', ' ', s)
-	return s
+	S = [re.sub('\s\s+|\t', ' ',str(x).strip()) for x in str(s).split("|")]
+	# foo,-x,-y ==> foo | foox | fooy
+	for i in range(0, len(S)):
+		s = S[i]
+		T = re.split('\s*,\s*-', s)
+		if len(T) > 1:
+			s = T[0]
+			for j in range(1, len(T)):
+				s += " | "+T[0]+T[j]
+			S[i] = s
+	
+	return " | ".join(S)
 
 def matches(s:str, a:str) -> bool:
 	S = s.split("|")
@@ -125,7 +160,34 @@ def matches(s:str, a:str) -> bool:
 	S.discard("")
 	A.discard("")
 	if len(S) == 0: return len(A) == 0
-	return S.issubset(A)
+
+	if S.issubset(A): return True
+
+	for s in S:
+		if s in A: continue
+		# if the given answer had some (foo) suffix, that better match
+		# the actual answer
+		if re.match('.+\s\([^)]+\)\s*$', s) is not None: return False
+		# the answer had no (foo) suffix, match it against any answer
+		# with a (foo) suffix
+		found = False
+		for a in A:
+			# if a has no suffix, it doesn't match
+			if re.match('.+\s\([^)]+\)\s*$', a) is None: continue
+			# remove the suffix
+			a0 = re.sub('\s+\([^)]+\)\s*$','', a)
+			if a0 == s:
+				found = True
+				break
+			# try foo (bar) ==> foo bar | bar foo | (bar) foo
+			a1 = re.sub('\s+\(([^)]+)\)\s*$',' \\1', a)
+			a2 = re.sub('^(.+)\s+\(([^)]+)\)\s*$','\\2 \\1', a)
+			a3 = re.sub('^(.+)\s+\(([^)]+)\)\s*$','(\\2) \\1', a)
+			if a1==s or a2==s or a3==s:
+				found = True
+				break
+		if not found: return False
+	return True
 
 def edit(prompt:str, default:str=""):
 	readline.set_startup_hook(lambda: readline.insert_text(default))
@@ -272,8 +334,8 @@ def load_prompt():
 	p = cfg['p']
 	if p is None: sys.exit("Set the prompt first!")
 	for row in db.execute("SELECT * FROM categories WHERE id=?", (p,)):
-		a_prompt = f"{SEL}[{row['a']}]{NRM} "
-		b_prompt = f"{SEL}[{row['b']}]{NRM} "
+		a_prompt %= row['a']
+		b_prompt %= row['b']
 		return
 	sys.exit("Invalid prompt id: %d" % p)
 
@@ -304,20 +366,13 @@ if len(sys.argv) == 2 and sys.argv[1] == "it":
 			row['b'], row['a']))
 	sys.exit(0)
 
-elif len(sys.argv) == 2 and sys.argv[1] == "i":
+elif len(sys.argv) == 2 and sys.argv[1].lower() == "i":
 	connect()
 	W,H = os.get_terminal_size()
 	
 	Q = "SELECT COUNT(*) FROM data "
 	row = db.execute(Q).fetchone()
 	total = 0 if row is None else row[0]
-
-	#row = db.execute(Q + "WHERE a_time < ?", (NOW,)).fetchone()
-	#m = 0 if row is None else row[0]
-	#row = db.execute(Q + "WHERE b_time < ?", (NOW,)).fetchone()
-	#m += 0 if row is None else row[0]
-	#print("%4d item%s due, %d pair%s total." % (m, "s" if m != 1 else "",
-	#	n, "s" if n != 1 else ""))
 
 	# Table with some statistics:
 	#------------------------------------------------------------------
@@ -360,19 +415,21 @@ elif len(sys.argv) == 2 and sys.argv[1] == "i":
 
 	# Histogram:
 	#------------------------------------------------------------------
-	k = 1 # x axis scale: 1 character is k hours
+	k = (2 if sys.argv[1]=='i' else 24) # bin size in hours
 	D = {} # histogram data
-	h = 15
+	h = 15 # content height in screen lines
 	for x in "ab":
 		for row in db.execute(f"""SELECT 
 			FLOOR((MAX({x}_time-?,0))/(3600*{k})) as i,
 			COUNT(id) as n
 			FROM DATA GROUP BY 1 ORDER BY 1""", (NOW,)):
 			i,n = row['i'],row['n']
+			if i > W-2: continue
 			if not i in D:
 				D[i] = n
 			else:
 				D[i] += n
+	if len(D)==0: sys.exit(0)
 	N = max(D.values())
 	y0 = int(100/N*h)
 	for i in D: D[i] = D[i]/N*h
@@ -383,20 +440,47 @@ elif len(sys.argv) == 2 and sys.argv[1] == "i":
 		for x in range(0, W-2):
 			s += '▒' if D.get(x,0) > y else '░'
 		print("▕" + s + "▎")
+	
+	K,u,dk = 24,'h',1 # hours between labels, unit, unit size in hours
+	if K//k < 8: K = 2*24
+	if K//k < 8: K = 7*24
+	if K//k < 8: K = 14*24
+	if K//k < 8: K = 30*24
+	if K > 24: u,dk = 'd',24
+	nk = K//k # bins between labels
 	s = " "
 	for x in range(0, W-2):
-		s += "▀" if x*k % 24 == 0 else "▔"
+		s += "▀" if x % nk == 0 else "▔"
 	print(s+" ")
 	s = "NOW"
-	t = 24
+	t = K
 	while True:
-		tt = str(t)+"h"
+		tt = str(t//dk)+u
 		if t//k + len(tt) > W: break
 		s += " "*(t//k - len(s)) + tt
-		t += 24
+		t += K
 	print(s)
 	print()
 	print(("max = %d, total pairs = %d" % (N, total)).center(W))
+	sys.exit(0)
+
+elif len(sys.argv) == 3 and sys.argv[1] == "norm":
+	connect()
+	found_any = False
+	s = sys.argv[2]
+	print(f"[%s] {SEL}-->{NRM} [%s]" % (s, normal(s)))
+	sys.exit(0)
+
+elif len(sys.argv) == 4 and sys.argv[1] == "match":
+	connect()
+	found_any = False
+	a = normal(sys.argv[2])
+	s = normal(sys.argv[3])
+	print(f"[%s] {SEL}-->{NRM} [%s]" % (s, a))
+	if matches(s,a):
+		print(" YES")
+	else:
+		print(" NO")
 	sys.exit(0)
 
 elif len(sys.argv) >= 3 and sys.argv[1] == "f":
@@ -419,7 +503,7 @@ elif len(sys.argv) >= 3 and sys.argv[1] == "e":
 	load_prompt()
 	items = []
 	for row in find(sys.argv[2:]):
-		items.append((row['id'], row['a'], row['b']))
+		items.append((row['id'], str(row['a']), str(row['b'])))
 	if len(items) == 0:
 		print("Nothing found.")
 		sys.exit(0)
@@ -452,7 +536,7 @@ elif len(sys.argv) >= 3 and sys.argv[1] == "e":
 	i,a0,b0 = items[n]
 	try:
 		a = normal(edit(a_prompt, a0))
-		b = normal(edit(a_prompt, b0))
+		b = normal(edit(b_prompt, b0))
 	except KeyboardInterrupt:
 		print("")
 		sys.exit(0)
@@ -481,6 +565,12 @@ elif len(sys.argv) >= 3 and sys.argv[1] == "e":
 		print("Entry updated.")
 	sys.exit(0)
 
+elif len(sys.argv) == 2 and sys.argv[1] == "R":
+	connect()
+	db.execute("UPDATE data SET a_time=a_time+60*60*24,b_time=b_time+60*60*24 WHERE a_time>0")
+	db.commit()
+	sys.exit(0)
+
 elif len(sys.argv) == 2 and sys.argv[1] == "l":
 	connect()
 	load_prompt()
@@ -489,7 +579,7 @@ elif len(sys.argv) == 2 and sys.argv[1] == "l":
 
 elif len(sys.argv) == 4 and sys.argv[1] in {"l", "l!"}:
 	connect()
-	adding = (sys.argv[1] == "p!")
+	adding = (sys.argv[1] == "l!")
 	Q,A = sys.argv[2:]
 	found = False
 	for row in db.execute("SELECT id FROM categories WHERE (a=? AND b=?) OR (b=? and a=?)", (Q,A,Q,A)):
@@ -535,7 +625,7 @@ elif len(sys.argv) == 2 and sys.argv[1] == "a":
 				print("")
 				continue
 
-			print("Adding %s --> %s\n" % (A,B))
+			print(f"{SEL}Adding{NRM} {A} {SEL}-->{NRM} {B}\n")
 			db.execute("INSERT INTO data (a,b,category) VALUES (?,?,?)", (A,B,cfg['p']))
 			db.commit()
 	except EOFError:
@@ -545,7 +635,7 @@ elif len(sys.argv) == 2 and sys.argv[1] == "a":
 	sys.exit(0)
 
 elif len(sys.argv) == 2 and sys.argv[1] == "all":
-	qa = True
+	QUIZ_ALL = True
 	# and fall through into quiz mode...
 	
 elif len(sys.argv) > 1:
@@ -558,7 +648,7 @@ elif len(sys.argv) > 1:
 found_any = False
 
 def quiz(a:str, b:str):
-	global found_any, NOW, db, qa
+	global found_any, NOW, db, QUIZ_ALL
 
 	def total():
 		global NOW, db
@@ -566,7 +656,7 @@ def quiz(a:str, b:str):
 		row = db.execute(Q, (NOW,)).fetchone()
 		return 0 if row is None else row[0]
 
-	N0 = total() if not qa else -1
+	N0 = total() if not QUIZ_ALL else -1
 	if N0 > 0: print(f"{SEL}Found {N0} items.{NRM}\n")
 
 	# this puts useable key names into the rows when joining:
@@ -585,7 +675,7 @@ def quiz(a:str, b:str):
 	U = "UPDATE data SET %s_bucket = ?, %s_time = ? WHERE id = ?" % (a,a)
 
 	while True:
-		row = (db.execute(Q, (NOW,)) if not qa else \
+		row = (db.execute(Q, (NOW,)) if not QUIZ_ALL else \
 		       db.execute(QA)).fetchone()
 		if row is None: break
 		found_any = True
@@ -604,7 +694,7 @@ def quiz(a:str, b:str):
 
 			# type hash for status
 			if B == "#":
-				if qa:
+				if QUIZ_ALL:
 					print("Unlimited mode, hit ^D to end")
 				else:
 					print("This is %d / %d." % (1+N0-total(), N0))
@@ -620,7 +710,7 @@ def quiz(a:str, b:str):
 			# repeat wrong answer (or clear input) to give up
 			elif B == B0 or B in {'','-','.','?'}:
 				print("")
-				input("NO --> %s" % row[b])
+				input("NO --> %s" % normal(row[b]))
 				solved = False
 				break
 
