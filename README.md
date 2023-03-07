@@ -15,5 +15,8 @@ scan ratings files (see my MOC branch) for songs with specific ratings
 ## timer
 countdown timer for the terminal
 
+## tt
+time tracker for terminal, bemenu and waybar
+
 ## trash
 move files to the nearest .trash folder

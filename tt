@@ -1,0 +1,371 @@
+#!/usr/bin/python
+import os,sys,re,time,datetime
+import sqlite3
+import subprocess
+
+def usage():
+	m = os.path.basename(sys.argv[0])
+	sys.exit("""
+Usage:
+  %s [command]
+
+Commands:
+ (empty)       list all projects
+  i            status
+  <name>       switch to project
+  sel          select project in bemenu
+  p            pause and unpause
+  a <name>     add new project
+  db           open database file in sqlitebrowser
+  x <name|all> export all (matching) projects
+""" % (m,))
+
+DATA_PATH   = '~/.config/tt/'
+DATA_FILE   = 'data.sqlite'
+CFG_FILE    = 'config'
+EXPORT_PATH = '~/wrk/'
+EXPORT_NAME = 'tt_export_' # current datetime is added
+PROJ        = None # current project
+T0          = -1   # starting time, if not paused
+PROJ_NAME   = None # cached from/for 'i' command
+PROJ_TOTAL  = None # same here
+PROJ_CACHED = None # same here
+
+########################################################################
+# Helper functions
+########################################################################
+
+def now():
+	return int(time.time())
+
+def dt_fmt(dt:int):
+	if dt is None or dt <= 0: dt = 0
+	#return "0"
+	#if dt < 60: return f"{dt}s"
+	#if dt < 60*60: return "%02d:%02d" % (dt//60, dt%60)
+	return "%d:%02d:%02d" % (dt//3600, dt//60%60, dt%60)
+
+def connect():
+	global db, cfg, DATA_PATH, DATA_FILE
+	p = os.path.expanduser(DATA_PATH)
+	os.makedirs(p, 0o700, True)
+	f = os.path.join(p, DATA_FILE)
+	fresh = not os.path.isfile(f)
+	db = sqlite3.connect(f)
+	if fresh:
+		print("Creating sqlite database...")
+		c = db.cursor()
+
+		# project data
+		c.execute("""CREATE TABLE proj (
+			id     INTEGER NOT NULL PRIMARY KEY,
+			name   STRING NOT NULL UNIQUE)""")
+		c.execute("CREATE INDEX n_index ON proj (name ASC)")
+
+		# time data
+		c.execute("""CREATE TABLE times (
+			id INTEGER NOT NULL PRIMARY KEY,
+			proj INTEGER NOT NULL,
+			t0 INTEGER NOT NULL,
+			dt INTEGER NOT NULL)""")
+		c.execute("CREATE INDEX p_index ON times (proj ASC)")
+		c.execute("CREATE INDEX t_index ON times (t0 ASC)")
+
+		db.commit()
+		print("Done.\n")
+
+	db.row_factory = sqlite3.Row
+
+	read_cfg()
+
+def read_cfg():
+	global DATA_PATH, CFG_FILE, PROJ, T0
+	global PROJ_NAME, PROJ_TOTAL, PROJ_CACHED
+	p = os.path.expanduser(DATA_PATH)
+	p = os.path.join(p, CFG_FILE)
+	if not os.path.isfile(p): return
+	with open(p) as f:
+		for line in f:
+			m = re.match(r'^\s*pcn\s+(.+)\s*$', line)
+			if m:
+				PROJ_NAME = m.group(1)
+				continue
+			m = re.match(r'^\s*(p|t0|pc|pct)\s+(-?\d+)\s*$', line)
+			if not m: continue
+			if   m.group(1) == 'p':   PROJ = int(m.group(2))
+			elif m.group(1) == 't0':  T0 = int(m.group(2))
+			elif m.group(1) == 'pc':  PROJ_CACHED = int(m.group(2))
+			elif m.group(1) == 'pct': PROJ_TOTAL = int(m.group(2))
+	#print(f"INIT {PROJ} {T0}")
+			
+def save_cfg():
+	global DATA_PATH, CFG_FILE, PROJ, T0
+	global PROJ_NAME, PROJ_TOTAL, PROJ_CACHED
+	p = os.path.expanduser(DATA_PATH)
+	os.makedirs(p, 0o700, True)
+	p = os.path.join(p, CFG_FILE)
+	with open(p, "wt") as f:
+		if PROJ is not None: f.write(f"p {PROJ}\n")
+		if T0 > 0: f.write(f"t0 {T0}\n")
+		if PROJ_CACHED is not None and PROJ_CACHED == PROJ:
+			f.write(f"pc  {PROJ_CACHED}\n")
+			f.write(f"pct {PROJ_TOTAL}\n")
+			f.write(f"pcn {PROJ_NAME}\n")
+	#print(f"EXIT {PROJ} {T0}")
+	
+def find(pattern=[], total=False):
+	T = ",(SELECT SUM(dt) FROM times WHERE times.proj=proj.id) AS total" if total else ""
+	Q = f"SELECT *{T} FROM proj"
+	A = ()
+
+	if type(pattern)==int:
+		Q += " WHERE id=?"
+		A += (PROJ,)
+	else:
+		for s in pattern:
+			Q += " WHERE" if len(A) == 0 else " AND"
+			Q += " (LOWER(name) LIKE LOWER(?))"
+			A += (f'%{s}%',)
+		Q += " ORDER BY name ASC"
+	return db.execute(Q, A)
+
+def finish():
+	# put current work item into times table
+	global db, PROJ, T0
+	if PROJ is not None and T0 > 0:
+		db.execute("""INSERT INTO times (proj,t0,dt) VALUES 
+				 (?,?,?)""", (PROJ,T0,now()-T0))
+		db.commit()
+
+########################################################################
+# Informationals
+########################################################################
+
+argc = len(sys.argv)
+
+if argc == 1:
+	connect()
+	for row in find(total=True):
+		line = row['name']
+		t = row['total']
+		if t is None: t = 0
+		if PROJ == row['id']:
+			if T0 > 0: t += now()-T0
+			line += f" ({'active' if T0 > 0 else 'paused'})"
+		if t > 0: line += f" -- {dt_fmt(t)}"
+		print(line)
+
+elif argc == 2 and sys.argv[1] == "i":
+	read_cfg()
+	if PROJ is None:
+		text = "--:--"
+		tooltip = "No active project"
+	else:
+		if PROJ_CACHED is None or PROJ_CACHED != PROJ:
+			PROJ_CACHED = PROJ
+			connect()
+			PROJ_NAME = "REMOVED"
+			PROJ_TOTAL = 0
+			for row in find(PROJ, total=True):
+				PROJ_NAME  = row['name']
+				PROJ_TOTAL = row['total']
+				if PROJ_TOTAL is None: PROJ_TOTAL = 0
+			save_cfg()
+		name = PROJ_NAME
+		total = PROJ_TOTAL
+		if T0 <= 0:
+			text = "--:--"
+		else:
+			total += now()-T0
+			text = "%d:%02d" % (total//3600, total//60%60)
+		tooltip = name
+		tooltip += "\\n%d:%02d:%02d" % (total//3600, total//60%60, total%60)
+
+	print(f'''{{"text": "{text}", "tooltip": "{tooltip}"}}''')
+
+########################################################################
+# Adding and exporting projects
+########################################################################
+
+elif argc >= 3 and sys.argv[1] == "a":
+	connect()
+	name = " ".join(sys.argv[2:])
+
+	for row in db.execute("SELECT * FROM proj WHERE name=?", (name,)):
+		sys.exit(f"Project {name} already exists!")
+
+	c = db.cursor()
+	c.execute("INSERT INTO proj(name) VALUES (?)", (name,))
+	db.commit()
+	if PROJ is None or T0 <= 0:
+		PROJ = c.lastrowid
+		save_cfg()
+
+elif argc >= 2 and sys.argv[1] == "x":
+	if argc < 3: usage()
+	connect()
+
+	### find matching projects ################################################
+	P = []
+	pat = sys.argv[2:] if argc > 3 or sys.argv[2] not in {"all","*"} else []
+	for row in find(pat, total=True):
+		name = row['name']
+		total = row['total']
+		if total is None: total = 0
+		P.append((row['id'], name, total))
+
+	if len(P) == 0:
+		sys.exit("No matches!")
+
+	### confirm the export ####################################################
+
+	print(f"Found {len(P)} project{'s' if len(P) != 1 else ''}:")
+	for p in P:
+		t = p[2]
+		if PROJ == p[0] and T0 > 0: t += now()-T0
+		print(f"  {p[1]}: {'(cancelled)' if t <= 0 else dt_fmt(t)}")
+
+	answer = None
+	while answer not in ["", "y", "n"]:
+		try:
+			answer = input("Export? [Y/n]? ").lower()
+		except EOFError:
+			print()
+			answer = "n"
+		except KeyboardInterrupt:
+			print()
+			answer = "n"
+	if answer == "n": sys.exit(0)
+
+	### get file name #########################################################
+
+	fn = os.path.expanduser(EXPORT_PATH)
+	os.makedirs(fn, 0o700, True)
+	fn = os.path.join(fn, EXPORT_NAME)
+	sf = datetime.datetime.now().strftime("%Y-%m-%d=%H-%M")
+	if os.path.isfile(fn+sf):
+		sf = datetime.datetime.now().strftime("%Y-%m-%d=%H-%M-%S")
+	if os.path.isfile(fn+sf):
+		sys.exit("File already exists!")
+	fn += sf
+
+	### export them ###########################################################
+
+	exported_current = False
+	with open(fn, "wt") as f:
+		for p in P:
+			t = p[2]
+			if PROJ == p[0]:
+				exported_current = True
+				if T0 > 0: t += now()-T0
+			f.write("%s\t%.4f\t%s\n" % (dt_fmt(t), t/3600.0, p[1]))
+
+		for p in P:
+			f.write(f"\n---[Details {p[1]}]{'-'*max(3,70-len(p[1]))}\n\n")
+			for row in db.execute("""SELECT * FROM times WHERE
+				proj=? ORDER BY t0 ASC""", (p[0],)):
+				d = datetime.datetime.fromtimestamp(row['t0'])
+				d = d.strftime("%A %Y-%m-%d %H:%M:%S")
+				f.write(f"{dt_fmt(row['dt'])} from {d}\n")
+			if PROJ == p[0] and T0 > 0:
+				d = datetime.datetime.fromtimestamp(T0)
+				d = d.strftime("%A %Y-%m-%d %H:%M:%S")
+				f.write(f"{dt_fmt(now()-T0)} from {d}\n")
+
+	### remove from database ##################################################
+
+	if exported_current:
+		PROJ = None
+		T0 = 0
+		save_cfg()
+
+	c = db.cursor()
+	ps = ",".join([str(p[0]) for p in P])
+	c.execute(f"DELETE FROM times WHERE proj IN ({ps})")
+	c.execute(f"DELETE FROM proj WHERE id IN ({ps})")
+	db.commit()
+
+########################################################################
+# Misc
+########################################################################
+
+elif argc == 2 and sys.argv[1] == "db":
+	p = os.path.expanduser(os.path.join(DATA_PATH, DATA_FILE))
+	os.execlp("sqlitebrowser", "sqlitebrowser", p)
+	print("Exec failed!")
+	sys.exit(-1)
+
+elif argc == 2 and sys.argv[1] in {"help", "-h", "--help"}:
+	usage()
+
+########################################################################
+# Changing and pausing active project
+########################################################################
+
+elif argc == 2 and sys.argv[1] == "p":
+	connect()
+	if PROJ is None:
+		sys.exit(f"No current project to unpause!")
+
+	if T0 <= 0:
+		T0 = now()
+	else:
+		finish()
+		T0 = 0
+	PROJ_CACHED = None
+	save_cfg()
+
+elif argc == 2 and sys.argv[1] == "sel":
+	connect()
+	P = []
+	L = {}
+	I = -1
+	i = 0
+	for row in db.execute("SELECT * FROM proj ORDER BY name ASC"):
+		name = row['name']
+		if PROJ == row['id']: I = i
+		i += 1
+		P.append(name)
+		L[name] = row['id']
+		A = ["/usr/bin/bemenu", "-p>", "-n", "-i", "-l30", "--no-exec", "--fn", "Droid 18", "-W0.7", "-B5", "--bdr", "#000000"]
+		if I >= 0: A.append("-I" + str(I))
+	res = subprocess.run(A, capture_output=True, input="\n".join(P), text=True)
+	if res.returncode != 0: sys.exit(0)
+	P0 = res.stdout.strip()
+
+	if P0 not in L: sys.exit("Invalid return from bemenu!")
+	if PROJ != L[P0]:
+		finish()
+	elif T0 > 0:
+		sys.exit("No change")
+	PROJ = L[P0]
+	T0 = now()
+	save_cfg()
+
+else:
+	connect()
+	P = []
+	for row in find(sys.argv[1:]):
+		P.append((row['id'], row['name']))
+
+	if len(P) == 0:
+		sys.exit("Not found!")
+	elif len(P) > 1:
+		print("Found several:")
+		for p in P:
+			print("  " + p[1])
+		sys.exit(-1)
+
+	P0 = P[0][0]
+	if PROJ != P0:
+		finish()
+	elif T0 > 0:
+		print("Already on " + P[0][1])
+		sys.exit(0)
+	print("Switching to " + P[0][1])
+	PROJ = P0
+	T0 = now()
+	save_cfg()
+
+sys.exit(0)
+
