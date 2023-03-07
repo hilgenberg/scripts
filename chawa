@@ -32,6 +32,10 @@ else
 	{
 		@cmd = ("make");
 	}
+	elsif (-f "build" and -x "build")
+	{
+		@cmd = ("./build");
+	}
 	elsif (-f "SConstruct" or -f "Sconstruct" or -f "sconstruct")
 	{
 		@cmd = ("scons");
@@ -59,10 +63,11 @@ else
 my $opt = "-qre close_write,attrib,move,move_self,create,delete,delete_self,unmount";
 $opt .= ' --timefmt "%F %T"';
 $opt .= ' --format "%T %e %w%f"';
-$opt .= ' --exclude \..*\.sw[px]';
+$opt .= ' --exclude "\..*\.sw[px]|\.git|Android/(\.gradle|app/(\.cxx|build))/"';
 
 while (1)
 {
+	print "\nWaiting for changes...\033[G";
 	# inefficient but we don't get useable timestamps to filter events with...
 	open my $w, "-|", "/usr/bin/inotifywait $opt ." or die "inotifywait failed: $?";
 	$_ = <$w>;
@@ -73,7 +78,6 @@ while (1)
 		die "Invalid event: $_\n";
 	}
 
-	print "\n";
 	my ($n) = GetTerminalSize();
 	if ($n > 3+length)
 	{
