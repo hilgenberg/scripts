@@ -3,6 +3,7 @@ import os,sys,re,time,datetime
 import sqlite3
 import readline # don't remove - enables editing in input() calls
 import random
+import pathlib
 
 def usage():
 	m = os.path.basename(sys.argv[0])
@@ -14,7 +15,7 @@ Commands:
  (empty)       quiz mode
   all          quiz everything, due or not
 
-  a            add new entries
+  a            interactively add new entries
   f <query>    find (sub)string(s) in database
   e <query>    edit matching entry
 
@@ -25,16 +26,15 @@ Commands:
   R            roll back all entries' due dates by one day
 
   l            show selected language pair
-  l  <A> <B>   selects existing A <-> B language pair
+  l  [A] <B>   selects existing A <-> B language pair
   l! <A> <B>   creates and selects new language pair
 
-The selected language pair applies to adding new entries - quizzing
-is always done for everything that is due. When learning spanish and
-you speak english, say, use l en es, not l es en, so the active recall
-is quizzed before the passive.
+For language pairs, A is your language, B is the foreign language (if
+you reverse that, the passive recall would get quizzed before the
+active recall, which is too easy). They each get their own database file.
 
 Matching is done ignoring case, spacing and punctuation at the ends.
-Items like "A|B|C" match some or all of the options in any order.
+Items like "A|B|C" match any, some or all of the options in any order.
 """ % (m,))
 # debugging commands:
 #  norm <str>            normalize given string
@@ -42,7 +42,6 @@ Items like "A|B|C" match some or all of the options in any order.
 
 
 DATA_PATH = '~/.config/vom/'
-DATA_FILE = 'data.sqlite'
 SEL       = '\033[35m' # hilight color
 NRM       = '\033[0m'  # reset to standard color
 
@@ -51,7 +50,8 @@ def HI(s:str): return SEL+s+NRM
 # readline wants nonprinting escapes inside \001 ... \002
 a_prompt  = f"\001{SEL}\002[%s]\001{NRM}\002 "
 b_prompt  = a_prompt # same pattern for Q and A
-cfg       = {"p":None} # filled from "config" table. p is ID of language pair
+a_prompt0 = f"{SEL}[%s]{NRM} "
+b_prompt0 = a_prompt0 # same pattern for Q and A
 QUIZ_ALL  = False # set to True on "all" command
 NOW       = int(time.time())
 
@@ -248,128 +248,59 @@ def dt_fmt(dt:int):
 	dt /= 365
 	return s % (dt/(365/12),"Y")
 
-def connect():
-	global db, cfg, DATA_PATH, DATA_FILE
+def select(a:str, b:str, create:bool):
+	global DATA_PATH
 	p = os.path.expanduser(DATA_PATH)
+
+	if a is None and not create:
+		pp = list(pathlib.Path(p).glob(f"*-{b}.sqlite"))
+		if len(pp) < 1: sys.exit(f"language {b} not found!")
+		if len(pp) > 1: sys.exit(f"language {b} not unique ({len(pp)} items found!)")
+		a = str(pp[0])[:-(8+len(b))]
+
 	os.makedirs(p, 0o700, True)
-	f = os.path.join(p, DATA_FILE)
+	fn = f"{a}-{b}.sqlite"
+	f = os.path.join(p, fn)
+	link = os.path.join(p, "current")
 	fresh = not os.path.isfile(f)
+	if fresh and not create: sys.exit("Language pair not found!")
 	db = sqlite3.connect(f)
 	if fresh:
 		print("Creating sqlite database...")
 		c = db.cursor()
-
-		# vocabulary data
 		c.execute("""CREATE TABLE data (
 			id INTEGER NOT NULL PRIMARY KEY,
 			a STRING NOT NULL,
 			b STRING NOT NULL,
-			category INTEGER NOT NULL,
 			a_bucket INTEGER NOT NULL DEFAULT 0,
 			b_bucket INTEGER NOT NULL DEFAULT 0,
 			a_time INTEGER NOT NULL DEFAULT 0,
 			b_time INTEGER NOT NULL DEFAULT 0)""")
-		c.execute("CREATE INDEX cat_index ON data (category)")
 		c.execute("CREATE INDEX ta_index ON data (a_time ASC)")
 		c.execute("CREATE INDEX tb_index ON data (b_time ASC)")
-
-		# language pairs
-		c.execute("""CREATE TABLE categories (
-			id INTEGER NOT NULL PRIMARY KEY,
-			a STRING NOT NULL,
-			b STRING NOT NULL)""")
-
-		# settings
-		c.execute("""CREATE TABLE config (
-			key STRING NOT NULL UNIQUE,
-			value)""")
-		c.execute("CREATE INDEX key_index ON config (key ASC)")
-		
 		db.commit()
-		print("Done.\n")
+		print("Done.")
 
+	if os.path.islink(link): os.remove(link)
+	os.symlink(fn, link)
+
+def connect():
+	global db, DATA_PATH
+	p = os.path.expanduser(DATA_PATH)
+	link = os.path.join(p, "current")
+	if not os.path.lexists(link): sys.exit("No language pair set! Call with l or l! option!")
+	f = os.path.realpath(link)
+	fn = os.path.basename(f)
+	db = sqlite3.connect(f)
 	db.row_factory = sqlite3.Row
 	
-	for row in db.execute("SELECT * FROM config"):
-		cfg[row['key']] = row['value']
-
-def convert():
-	global DATA_PATH, DATA_FILE
-	p = os.path.expanduser(DATA_PATH)
-	f1 = os.path.join(p, DATA_FILE)
-	f2 = os.path.join(p, DATA_FILE + ".new")
-	if not os.path.isfile(f1): sys.exit("old data file not found")
-	if os.path.isfile(f2): sys.exit("new data file exists")
-	db1 = sqlite3.connect(f1)
-	db2 = sqlite3.connect(f2)
-
-	print("Creating new sqlite database...")
-	c2 = db2.cursor()
-
-	# vocabulary data
-	c2.execute("""CREATE TABLE data (
-		id INTEGER NOT NULL PRIMARY KEY,
-		a STRING NOT NULL,
-		b STRING NOT NULL,
-		category INTEGER NOT NULL,
-		a_bucket INTEGER NOT NULL DEFAULT 0,
-		b_bucket INTEGER NOT NULL DEFAULT 0,
-		a_time INTEGER NOT NULL DEFAULT 0,
-		b_time INTEGER NOT NULL DEFAULT 0)""")
-	c2.execute("CREATE INDEX cat_index ON data (category)")
-	c2.execute("CREATE INDEX ta_index ON data (a_time ASC)")
-	c2.execute("CREATE INDEX tb_index ON data (b_time ASC)")
-
-	# language pairs
-	c2.execute("""CREATE TABLE categories (
-		id INTEGER NOT NULL PRIMARY KEY,
-		a STRING NOT NULL,
-		b STRING NOT NULL)""")
-
-	# settings
-	c2.execute("""CREATE TABLE config (
-		key STRING NOT NULL UNIQUE,
-		value)""")
-	c2.execute("CREATE INDEX key_index ON config (key ASC)")
-	
-	db2.commit()
-	c2 = db2.cursor()
-
-	db1.row_factory = sqlite3.Row
-	
-	for row in db1.execute("SELECT * FROM config"):
-		c2.execute("REPLACE INTO config (key,value) VALUES (?,?)",
-			(row['key'], row['value']))
-	for row in db1.execute("SELECT * FROM categories ORDER BY id"):
-		c2.execute("REPLACE INTO categories (a,b) VALUES (?,?)",
-			(row['a'], row['b']))
-	for row in db1.execute("SELECT * FROM data ORDER BY id"):
-		ta = row['a_time']
-		if ta is None: ta = 0
-		tb = row['b_time']
-		if tb is None: tb = 0
-		c2.execute("REPLACE INTO data (a, b, category, a_bucket, b_bucket, a_time, b_time) VALUES (?,?,?,?,?,?,?)", (
-		row['a'], row['b'], row['category'], 
-		row['a_bucket'], row['b_bucket'], 
-		ta, tb))
-	db2.commit()
-	sys.exit("done.")
-
-def save_cfg():
-	c = db.cursor()
-	for k,v in cfg.items():
-		c.execute("REPLACE INTO config (key,value) VALUES (?,?)", (k,v))
-	db.commit()
-	
-def load_prompt():
-	global cfg, a_prompt, b_prompt
-	p = cfg['p']
-	if p is None: sys.exit("Set the prompt first!")
-	for row in db.execute("SELECT * FROM categories WHERE id=?", (p,)):
-		a_prompt %= row['a']
-		b_prompt %= row['b']
-		return
-	sys.exit("Invalid prompt id: %d" % p)
+	global a_prompt, b_prompt, a_prompt0, b_prompt0
+	m = re.match('^([^-]+)-([^-]+)\.sqlite$', fn)
+	if m is None: sys.exit(f"Link is set to garbage: {link} --> {fn}")
+	a_prompt  %= m[1]
+	b_prompt  %= m[2]
+	a_prompt0 %= m[1]
+	b_prompt0 %= m[2]
 
 def find(S):
 	A = ()
@@ -525,14 +456,13 @@ elif len(sys.argv) >= 3 and sys.argv[1] == "f":
 	sys.exit(0)
 
 elif len(sys.argv) == 2 and sys.argv[1] == "db":
-	p = os.path.expanduser(os.path.join(DATA_PATH, DATA_FILE))
+	p = os.path.expanduser(os.path.join(DATA_PATH, "current"))
 	os.execlp("sqlitebrowser", "sqlitebrowser", p)
 	print("Exec failed!")
 	sys.exit(-1)
 
 elif len(sys.argv) >= 3 and sys.argv[1] == "e":
 	connect()
-	load_prompt()
 	items = []
 	for row in find(sys.argv[2:]):
 		items.append((row['id'], str(row['a']), str(row['b'])))
@@ -585,9 +515,7 @@ elif len(sys.argv) >= 3 and sys.argv[1] == "e":
 		print("Error: Strings can't be empty.")
 		sys.exit(1)
 	else:
-		for row in db.execute("SELECT * FROM data WHERE category=? \
-			AND (LOWER(a)=LOWER(?) OR LOWER(b)=LOWER(?))",\
-			(cfg['p'],a,b)):
+		for row in db.execute("SELECT * FROM data WHERE LOWER(a)=LOWER(?) OR LOWER(b)=LOWER(?)", (a,b)):
 			if row['id'] != i:
 				print("Collision with: %s --> %s"\
 					%(row['a'], row['b']))
@@ -605,33 +533,21 @@ elif len(sys.argv) == 2 and sys.argv[1] == "R":
 
 elif len(sys.argv) == 2 and sys.argv[1] == "l":
 	connect()
-	load_prompt()
 	print("%s--> %s" % (a_prompt, b_prompt))
 	sys.exit(0)
 
 elif len(sys.argv) == 4 and sys.argv[1] in {"l", "l!"}:
-	connect()
 	adding = (sys.argv[1] == "l!")
 	Q,A = sys.argv[2:]
-	found = False
-	for row in db.execute("SELECT id FROM categories WHERE (a=? AND b=?) OR (b=? and a=?)", (Q,A,Q,A)):
-		if adding: sys.exit("Already exists!")
-		cfg['p'] = row['id']
-		save_cfg()
-		print("Prompt updated.")
-		sys.exit(0)
-	if not adding: sys.exit("Not found!")
+	select(Q,A,adding)
+	sys.exit(0)
 
-	c = db.cursor()
-	c.execute("INSERT INTO categories(a,b) VALUES (?,?)", (Q,A))
-	db.commit()
-	cfg['p'] = c.lastrowid
-	save_cfg()
+elif len(sys.argv) == 3 and sys.argv[1] == "l":
+	select(None, sys.argv[2], False)
 	sys.exit(0)
 
 elif len(sys.argv) == 2 and sys.argv[1] == "a":
 	connect()
-	load_prompt()
 	try:
 		while True:
 			A = normal(input(a_prompt))
@@ -639,7 +555,7 @@ elif len(sys.argv) == 2 and sys.argv[1] == "a":
 				print("Can not be empty\n")
 				continue
 			dup = False
-			for row in db.execute("SELECT * FROM data WHERE LOWER(a)=LOWER(?) and category=?", (A,cfg['p'])):
+			for row in db.execute("SELECT * FROM data WHERE LOWER(a)=LOWER(?)", (A,)):
 				print("Already exists! Answer:", row['b'])
 				dup = True
 			if dup:
@@ -650,7 +566,7 @@ elif len(sys.argv) == 2 and sys.argv[1] == "a":
 			if B == "":
 				print("Can not be empty\n")
 				continue
-			for row in db.execute("SELECT * FROM data WHERE LOWER(b)=LOWER(?) and category=?", (B,cfg['p'])):
+			for row in db.execute("SELECT * FROM data WHERE LOWER(b)=LOWER(?)", (B,)):
 				print("Already exists! Question:", row['a'])
 				dup = True
 			if dup:
@@ -658,7 +574,7 @@ elif len(sys.argv) == 2 and sys.argv[1] == "a":
 				continue
 
 			print(f"{SEL}Adding{NRM} {A} {SEL}-->{NRM} {B}\n")
-			db.execute("INSERT INTO data (a,b,category) VALUES (?,?,?)", (A,B,cfg['p']))
+			db.execute("INSERT INTO data (a,b) VALUES (?,?)", (A,B))
 			db.commit()
 	except EOFError:
 		print("")
@@ -679,8 +595,13 @@ elif len(sys.argv) > 1:
 
 found_any = False
 
-def quiz(a:str, b:str):
+def quiz(direction:int):
 	global found_any, NOW, db, QUIZ_ALL
+	global a_prompt0, b_prompt0
+	a = 'a' if direction > 0 else 'b'
+	b = 'b' if direction > 0 else 'a'
+	ap = a_prompt0 if direction > 0 else b_prompt0
+	bp = b_prompt0 if direction > 0 else a_prompt0
 
 	def total():
 		global NOW, db
@@ -695,29 +616,18 @@ def quiz(a:str, b:str):
 	db.execute("pragma full_column_names=ON;")
 	#db.execute("pragma short_column_names=OFF;")
 
-	Q = """SELECT data.*, c.a, c.b FROM data 
-		INNER JOIN categories c ON data.category=c.id 
-		WHERE %s_time < ? 
-		ORDER BY RANDOM() LIMIT 1""" % a
-
-	QA = """SELECT data.*, c.a, c.b FROM data 
-		INNER JOIN categories c ON data.category=c.id 
-		ORDER BY RANDOM() LIMIT 1"""
-	
+	Q = """SELECT * FROM data WHERE %s_time < ? ORDER BY RANDOM() LIMIT 1""" % a
+	QA = """SELECT * FROM data ORDER BY RANDOM() LIMIT 1"""
 	U = "UPDATE data SET %s_bucket = ?, %s_time = ? WHERE id = ?" % (a,a)
 
 	while True:
-		row = (db.execute(Q, (NOW,)) if not QUIZ_ALL else \
-		       db.execute(QA)).fetchone()
+		row = (db.execute(Q, (NOW,)) if not QUIZ_ALL else db.execute(QA)).fetchone()
 		if row is None: break
 		found_any = True
 
 		# print question
-		ap = f"{SEL}[{row['categories.%s'%a]}]{NRM} "
-		bp = f"{SEL}[{row['categories.%s'%b]}]{NRM} "
-		#print(ap + str(row[a]))
 		S = [s.strip() for s in str(row[a]).split("|")]
-		print(ap + (SEL+" | "+NRM).join(S))
+		print(ap + HI(" | ").join(S))
 
 		# get answer
 		B0 = ""
@@ -766,16 +676,15 @@ def quiz(a:str, b:str):
 		print("")
 
 connect()
-load_prompt()
 
 try:
 	try:
-		quiz('a','b')
+		quiz(+1)
 	except EOFError:
 		print("\n")
 		# and keep going in the other direction...
 
-	quiz('b','a')
+	quiz(-1)
 
 	if not found_any:
 		print("Nothing due to be quizzed.")
