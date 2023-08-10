@@ -46,6 +46,8 @@ DATA_FILE = 'data.sqlite'
 SEL       = '\033[35m' # hilight color
 NRM       = '\033[0m'  # reset to standard color
 
+def HI(s:str): return SEL+s+NRM
+
 # readline wants nonprinting escapes inside \001 ... \002
 a_prompt  = f"\001{SEL}\002[%s]\001{NRM}\002 "
 b_prompt  = a_prompt # same pattern for Q and A
@@ -188,6 +190,43 @@ def matches(s:str, a:str) -> bool:
 				break
 		if not found: return False
 	return True
+
+def other_matches(s:str, a:str) -> str:
+	# return every option in s, that was not in a
+	S = s.split("|")
+	A = a.split("|")
+	for M in [S,A]:
+		for i in range(0, len(M)):
+			s = M[i].strip()
+			# unify spaces and tabs
+			s = re.sub('\s\s+|\t', ' ', s)
+			M[i] = s
+	A0 = A
+	for M in [S,A]:
+		for i in range(0, len(M)):
+			s = M[i].lower()
+			# remove punctuation at the ends when comparing
+			s = re.sub('\s*[.!?,]+$|^[¡¿]+\s*','', s)
+			M[i] = s
+	S = set(S)
+	S.discard("")
+
+	R = []
+
+	for i in range(0, len(A)):
+		a = A[i]
+		if a == "" or a in S: continue
+		if re.match('.+\s\([^)]+\)\s*$', a) is not None:
+			a0 = re.sub('\s+\([^)]+\)\s*$','', a)
+			if a0 in S: continue
+			# try foo (bar) ==> foo bar | bar foo | (bar) foo
+			a1 = re.sub('\s+\(([^)]+)\)\s*$',' \\1', a)
+			a2 = re.sub('^(.+)\s+\(([^)]+)\)\s*$','\\2 \\1', a)
+			a3 = re.sub('^(.+)\s+\(([^)]+)\)\s*$','(\\2) \\1', a)
+			if a1 in S or a2 in S or a3 in S:
+				continue
+		R.append(A0[i])
+	return R
 
 def edit(prompt:str, default:str=""):
 	readline.set_startup_hook(lambda: readline.insert_text(default))
@@ -705,6 +744,7 @@ def quiz(a:str, b:str):
 			# break on right answer
 			elif matches(B, str(row[b])):
 				solved = True
+				R = other_matches(B, str(row[b]))
 				break
 
 			# repeat wrong answer (or clear input) to give up
@@ -721,6 +761,8 @@ def quiz(a:str, b:str):
 		# move to proper bucket+time
 		if solved:
 			rb,rt = update_known(row["%s_bucket" % a], row["%s_time" % a])
+			if R is not None and len(R) > 0:
+				print("YES" + HI(" + ") + HI(" | ").join(R))
 		else:
 			rb = 0
 			rt = NOW + 1
