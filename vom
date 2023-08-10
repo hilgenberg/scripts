@@ -59,7 +59,7 @@ NOW       = int(time.time())
 
 def bucket_time(b:int):
 	DAYS = 60*60*24
-	D = [1, 1, 2, 3, 5, 8, 14, 21, 30, 50, 80, 100, 120]
+	D = [1, 1, 2, 3, 5, 8, 14, 21, 30, 50, 80, 120, 200]
 	if b is None or b < 0: b = 0
 	if b >= len(D): b = len(D)-1
 	return int(D[b] * DAYS)
