@@ -111,23 +111,16 @@ def update_known(b:int, t:int):
 	DAY = 24*HOUR
 	K  = int(fuzz/DAY)
 	if K >= 1:
-		#dd = random.randint(0, K)
-		D = []
-		D0 = []
-		for i in range(0, K+1):
-			n = 0
-			for x in "ab":
-				n += db.execute(f"SELECT COUNT(*) FROM data \
-					WHERE {x}_time > ? AND {x}_time <= ? ",
-					(t-(i+1)*DAY+4*HOUR, t-i*DAY+4*HOUR)).fetchone()[0]
-			D.append(1 / (10+10*i+n*n))
-			D0.append(n)
-		#dd = random.choices(range(0, K+1), D)[0]
-		dd = min(enumerate(D0), key=lambda x: x[1])[0]
-		#if dd != 0: print("Random offset:", D0, "-->", dd, "days")
-
-		t -= dd * DAY
-		fuzz -= dd*DAY
+		D = [0]*(K+1)
+		tt = t+4*HOUR
+		for x in "ab":
+			for r in db.execute(
+				f"SELECT ({tt}-{x}_time)/{DAY} as i,COUNT(*) FROM data \
+					WHERE {x}_time > {tt-(K+1)*DAY} AND {x}_time <= {tt} \
+					GROUP BY i"): D[r[0]] += r[1]
+		dd = DAY * min(enumerate(D), key=lambda x: x[1])[0]
+		t    -= dd
+		fuzz -= dd
 		assert(t >= now)
 
 	return (b,t)
