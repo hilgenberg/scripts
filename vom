@@ -194,7 +194,7 @@ def other_matches(s:str, a:str) -> str:
 			# unify spaces and tabs
 			s = re.sub('\s\s+|\t', ' ', s)
 			M[i] = s
-	A0 = A
+	A0 = A.copy()
 	for M in [S,A]:
 		for i in range(0, len(M)):
 			s = M[i].lower()
