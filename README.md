@@ -20,3 +20,6 @@ time tracker for terminal, bemenu and waybar
 
 ## trash
 move files to the nearest .trash folder
+
+## gato and roco
+verb conjugators for Spanish and Romanian

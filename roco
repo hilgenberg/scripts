@@ -1,0 +1,220 @@
+#!/usr/bin/python
+from roco_regular   import *
+from roco_irregular import *
+from roco_web       import *
+from roco_verbs     import *
+import os, sys
+
+def table(v:Verb):
+	v0 = v if type(v) == Verb and not v.imp_tu else Verb(v.full, None, v.extend)
+	
+	dim = '\033[35m'
+	nrm = '\033[0m'
+	sel = '\033[35m'
+	def pr(a, b, w):
+		if b is None or a == b or len(a) == 0:
+			print(a.ljust(w), end="")
+			return
+		# find common prefix
+		n = 0
+		while n < len(a) and n < len(b) and a[n] == b[n]:
+			n += 1
+		# and common suffix
+		m = 0
+		while m < len(a)-n and m < len(b)-n and a[-1-m] == b[-1-m]:
+			m += 1
+
+		# a and b are not equal, so this must hold:
+		assert(n+m <= len(a) and n+m <= len(b))
+		assert(n+m <  len(a) or  n+m <  len(b))
+
+		# if diff is removal, mark the spot
+		if n+m == len(a):
+			assert(len(a) < len(b))
+			if m > 0:
+				m -= 1
+			else:
+				n -= 1
+		
+		if m == 0:
+			# (the -m indices would not work)
+			print(a[:n] + sel + a[n:] + nrm, end="")
+		else:
+			print(a[:n] + sel + a[n:-m] + nrm + a[-m:], end="")
+		print(" "*(w-len(a)), end="")
+
+	TT = []
+	for x in [v, v0]:
+		T = [
+			["Verb", x.full],
+			["Gerund", x.gerund() or "-"],
+			["Perfect", x.participle_perfect() or "-"],
+			["T", "-"], # ignore translation for sizing
+
+			["Present" + ("(x)" if x.extend else "")] + x.present(),
+			["Conjunctive"] + x.conjunctive(),
+			["Optative"] + x.optative(),
+			["Optative.P"] + x.optative_perfect(),
+
+			["future1"] + x.future1(),
+			["future2"] + x.future2(),
+			["future3"] + x.future3(),
+			["compound_perfect"] + x.compound_perfect(),
+			["imperfect"] + x.imperfect(),
+			["perfect"] + x.perfect(),
+			["imperative" + ("(tu)" if x.imp_tu else "")] + x.imperative(),
+			["neg_imperative"] + x.neg_imperative(),
+		]
+
+		for E in T:
+			for i in range(0, len(E)):
+				if E[i] is None: E[i] = "-"
+			E[0] = E[0].upper()
+			E.insert(0, max(len(x) for x in E))
+		TT.append(T)
+	T,T0 = TT
+
+	# align columns if we have the screen space for it
+	try:
+		W,H = os.get_terminal_size()
+	except:
+		W = 80
+		h = 100
+	N = [4,4,4,4]
+	ww = [0] * max(N)
+	i = 0
+	for n in N:
+		for x in range(0,n):
+			w = T[i+x][0]
+			if w > ww[x]: ww[x] = w
+		i += n
+	assert(i == len(T))
+	if max(N)*(max(ww)+2)+2 <= W:
+		w = max(ww)
+		for E in T: E[0] = w
+	elif sum(ww)+2*(max(N)+1) <= W:
+		i = 0
+		for n in N:
+			for x in range(0,n):
+				T[i+x][0] = ww[x]
+			i += n
+
+	if v.trans is None:
+		T[3] = [0, "", ""]
+	else:
+		T[3] = [0, "TRANSLATION", v.trans]
+	T0[3] = T[3]
+
+	print()
+	i = 0
+	for n in N:
+		for y in range(0,2 if i==0 else 7):
+			if y == 0: print(dim, end = "")
+			for x in range(i,i+n):
+				print("  ", end="")
+				pr(T[x][y+1], T0[x][y+1], T[x][0])
+			if y == 0: print(nrm, end = "")
+			print()
+		print()
+		i += n
+	assert(i == len(T))
+
+def tree():
+	global verbs, irregulars
+	R = []
+	C = {}
+	for v,x in irregulars.items():
+		t,extend,imp_tu,P,D = x
+		if P is None:
+			R.append(v)
+		else:
+			assert(P in irregulars)
+			if not P in C:
+				C[P] = [v]
+			else:
+				C[P].append(v)
+	def pr(v, pre1:str="", pre2:str=""):
+		k = len(verbs[v].d)
+		k = "" if k == 0 else " %d" % k
+		print(pre1 + v + k)
+		if not v in C: return
+		c = C[v]
+		for x in c[:-1]:
+			pr(x, pre2 + "  ├── ", pre2 + "  │   ")
+		pr(c[-1],     pre2 + "  └── ", pre2 + "      ")
+	
+	for v in R: pr(v)
+
+if __name__ == "__main__":
+
+	for v,x in regulars.items():
+		tr,ext,imp = x
+		verbs[v] = Verb(v,tr,ext,imp)
+
+	for v,x in irregulars.items():
+		t,ext,imp_tu,P,D = x
+		verbs[v] = DVerb(v, t, ext, imp_tu, P, D)
+
+	if len(sys.argv) == 2 and sys.argv[1] == "-t":
+		tree()
+		sys.exit(0)
+
+	if len(sys.argv) == 1:
+		sys.exit("no verb to conjugate")
+		
+		print("regulars = {")
+		for s,t in sorted(regulars.items()):
+			v = verbs[s]
+			k = f"'{s}':".ljust(15)
+			print(f"\t{k} \"{v.trans}\",")
+		print("}")
+		print()
+
+		print("irregulars = {")
+		for s,x in sorted(irregulars.items()):
+			t,P,D = x
+			v = verbs[s]
+			k = f"'{s}':".ljust(15)
+			if v.parent is None:
+				P = "None"
+			else:
+				f,r,a = v.parent
+				P = f"'{f}'"
+			D = ""
+			for a,b in v.d.items():
+				if len(D) > 0: D += " "
+				D += a + ':' + b.lower()
+			print(f"\t{k} (\"{v.trans}\", {P}, \"{D}\"),")
+		print("}")
+		sys.exit(0)
+
+
+	for i in range(1, len(sys.argv)):
+		if i > 1: print("\n")
+		s = sys.argv[i].lower()
+		if s in verbs:
+			v = verbs[s]
+			table(v)
+		elif s[-2:] == '!!':
+			try:
+				v = Verb(s[:-2], None, True)
+			except:
+				print(s[:-2], "is garbage")
+				continue
+			table(v)
+		elif s[-1] == '!':
+			try:
+				v = Verb(s[:-1])
+			except:
+				print(s[:-1], "is garbage")
+				continue
+			table(v)
+		else:
+			try:
+				v = WVerb(s)
+			except Exception as e:
+				print(f"{s} failed: {e}")
+				continue
+			v.optimize()
+			table(v)
+
