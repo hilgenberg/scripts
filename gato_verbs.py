@@ -89,6 +89,7 @@ regulars = {
 	'poseer':       "have",
 	'procesar':     "prosecute, process",
 	'prometer':     "promise",
+	'pulir':        "polish",
 	'quedar':       "stay",
 	'rasar':        "skim",
 	'recibir':      "receive, welcome",

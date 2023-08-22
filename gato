@@ -114,7 +114,10 @@ def table(v:Verb):
 				T[i+x][0] = ww[x]
 			i += n
 
-	T[3] = [0, "TRANSLATION", v.trans]
+	if v.trans is None:
+		T[3] = [0, "", ""]
+	else:
+		T[3] = [0, "TRANSLATION", v.trans]
 	T0[3] = T[3]
 
 	print()
@@ -208,9 +211,10 @@ if __name__ == "__main__":
 		elif s[-1] == '!':
 			try:
 				v = Verb(s[:-1])
-				table(v)
 			except:
 				print(s[:-1], "is garbage")
+				continue
+			table(v)
 		else:
 			print(s, "not found!")
 
