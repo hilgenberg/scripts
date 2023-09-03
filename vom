@@ -31,15 +31,15 @@ Commands:
 
 For language pairs, A is your language, B is the foreign language (if
 you reverse that, the passive recall would get quizzed before the
-active recall, which is too easy). They each get their own database file.
+active recall, which is too easy). Each pair gets its own database file.
 
 Matching is done ignoring case, spacing and punctuation at the ends.
 Items like "A|B|C" match any, some or all of the options in any order.
+Also, "A,-foo,-bar" is equivalent to "A|Afoo|Abar".
 """ % (m,))
 # debugging commands:
 #  norm <str>            normalize given string
 #  match <answer> <str>  match given string against answer
-
 
 DATA_PATH = '~/.config/vom/'
 SEL       = '\033[35m' # hilight color
@@ -47,6 +47,8 @@ NRM       = '\033[0m'  # reset to standard color
 
 def HI(s:str): return SEL+s+NRM
 
+a_name    = ""
+b_name    = ""
 # readline wants nonprinting escapes inside \001 ... \002
 a_prompt  = f"\001{SEL}\002[%s]\001{NRM}\002 "
 b_prompt  = a_prompt # same pattern for Q and A
@@ -78,16 +80,16 @@ def update_known(b:int, t:int):
 	dt = bucket_time(b)
 	fuzz = 0 # how much can we change the time to offset drift?
 
+	# option A if 90% of bucket time has passed
 	if now >= t or b <= 0 or now >= t - 0.1*dt0:
-		# option A if 90% of bucket time has passed
 		t  = now + dt
 		b += 1
-		fuzz = dt * 0.15
+		fuzz = dt * 0.2
 	
+	# option B unless that moves t backwards (should not happen)
 	elif now+dt0 > t:
-		# option B unless that moves t backwards (should not happen)
 		t = now + dt0
-		fuzz = dt0 * 0.15
+		fuzz = dt0 * 0.2
 
 	# work against quiz times drifting farther and farther back by
 	# always pulling them a little bit towards 6:00 in the morning
@@ -246,7 +248,7 @@ def dt_fmt(dt:int):
 	if dt < 14: return s % (dt,"D")
 	if dt < 30*7: return s % (dt/7,"W")
 	dt /= 365
-	return s % (dt/(365/12),"Y")
+	return s % (dt,"Y")
 
 def select(a:str, b:str, create:bool):
 	global DATA_PATH
@@ -294,9 +296,11 @@ def connect():
 	db = sqlite3.connect(f)
 	db.row_factory = sqlite3.Row
 	
-	global a_prompt, b_prompt, a_prompt0, b_prompt0
+	global a_name, b_name, a_prompt, b_prompt, a_prompt0, b_prompt0
 	m = re.match('^([^-]+)-([^-]+)\.sqlite$', fn)
 	if m is None: sys.exit(f"Link is set to garbage: {link} --> {fn}")
+	a_name     = m[1]
+	b_name     = m[2]
 	a_prompt  %= m[1]
 	b_prompt  %= m[2]
 	a_prompt0 %= m[1]
@@ -424,26 +428,21 @@ elif len(sys.argv) == 2 and sys.argv[1].lower() == "i":
 		t += K
 	print(s)
 	print()
-	print(("max = %d, total pairs = %d" % (N, total)).center(W))
+	print(("%s-%s, max = %d, total pairs = %d" % (a_name, b_name, N, total)).center(W))
 	sys.exit(0)
 
 elif len(sys.argv) == 3 and sys.argv[1] == "norm":
 	connect()
-	found_any = False
 	s = sys.argv[2]
 	print(f"[%s] {SEL}-->{NRM} [%s]" % (s, normal(s)))
 	sys.exit(0)
 
 elif len(sys.argv) == 4 and sys.argv[1] == "match":
 	connect()
-	found_any = False
 	a = normal(sys.argv[2])
 	s = normal(sys.argv[3])
 	print(f"[%s] {SEL}-->{NRM} [%s]" % (s, a))
-	if matches(s,a):
-		print(" YES")
-	else:
-		print(" NO")
+	print("YES" if matches(s,a) else "NO")
 	sys.exit(0)
 
 elif len(sys.argv) >= 3 and sys.argv[1] == "f":
@@ -605,7 +604,7 @@ def quiz(direction:int):
 
 	def total():
 		global NOW, db
-		Q = """SELECT COUNT(*) FROM data WHERE %s_time < ?""" % a
+		Q = f"SELECT COUNT(*) FROM data WHERE {a}_time < ?"
 		row = db.execute(Q, (NOW,)).fetchone()
 		return 0 if row is None else row[0]
 
@@ -616,9 +615,11 @@ def quiz(direction:int):
 	db.execute("pragma full_column_names=ON;")
 	#db.execute("pragma short_column_names=OFF;")
 
-	Q = """SELECT * FROM data WHERE %s_time < ? ORDER BY RANDOM() LIMIT 1""" % a
-	QA = """SELECT * FROM data ORDER BY RANDOM() LIMIT 1"""
-	U = "UPDATE data SET %s_bucket = ?, %s_time = ? WHERE id = ?" % (a,a)
+	#Q = f"SELECT * FROM data WHERE {a}_time < ? ORDER BY RANDOM() LIMIT 1"
+	#QA = "SELECT * FROM data ORDER BY RANDOM() LIMIT 1"
+	Q = f"SELECT * FROM data WHERE id IN (SELECT id FROM data WHERE {a}_time < ? ORDER BY RANDOM() LIMIT 1)"
+	QA = "SELECT * FROM data WHERE id IN (SELECT id FROM data ORDER BY RANDOM() LIMIT 1)"
+	U = f"UPDATE data SET {a}_bucket = ?, {a}_time = ? WHERE id = ?"
 
 	while True:
 		row = (db.execute(Q, (NOW,)) if not QUIZ_ALL else db.execute(QA)).fetchone()
@@ -639,7 +640,9 @@ def quiz(direction:int):
 				if QUIZ_ALL:
 					print("Unlimited mode, hit ^D to end")
 				else:
-					print("This is %d / %d." % (1+N0-total(), N0))
+					M = total() # = remaining items
+					p = round(100*(N0-M)/(N0-1)) if N0 > 1 else 100
+					print("At %d%%. This is %d / %d." % (p, 1+N0-M, N0))
 			# ignore empty input (hitting enter twice by accident)
 			elif B == "" and B0 == "":
 				continue
